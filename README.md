@@ -33,6 +33,10 @@ Administrators submit CSV/XLSX files through the server-validated ingestion endp
 
 Reports are versioned as drafts and are published to one or more tenant IDs with authorized periods. Customer catalog requests are filtered by the report-publication tenant boundary. Export and SIEM-forwarding transport are intentionally not auto-enabled: export must add formula-injection protection and SIEM destinations must pass an administrative allowlist before a credential can be activated.
 
+### Schema Changes
+
+Fresh installations receive the complete tenant-owned upload model from `db/init.sql`. Existing installations must review and apply the additive migration in `drizzle/0001_lonely_nomad.sql` with the organization’s change-control process. Before enabling customer-visible reporting, an operator must backfill `uploads.tenant_id` from a documented source of truth and verify that no historical upload remains unassigned. Do not infer a tenant from filename, member data, or a user-selected client-side value.
+
 ## SDLC Controls
 
 The repository contains a GitHub Actions pipeline for TypeScript checks, tests, production build, and high-severity production dependency audit. Protect the `main` branch, require passing checks and code review, enable GitHub Dependabot and secret scanning, sign release tags, and retain build artifacts and audit exports according to the organization’s documented retention schedule.

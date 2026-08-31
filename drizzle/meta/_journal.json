@@ -8,6 +8,13 @@
       "when": 1788177333524,
       "tag": "0000_last_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788178644452,
+      "tag": "0001_lonely_nomad",
+      "breakpoints": true
     }
   ]
 }

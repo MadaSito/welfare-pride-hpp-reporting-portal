@@ -56,6 +56,7 @@ export const datasetTemplates = pgTable("dataset_templates", {
 
 export const uploads = pgTable("uploads", {
   id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id").references(() => tenants.id, { onDelete: "restrict" }),
   templateId: uuid("template_id").references(() => datasetTemplates.id, { onDelete: "restrict" }),
   storageKey: text("storage_key").notNull(),
   sha256: varchar("sha256", { length: 64 }).notNull(),
