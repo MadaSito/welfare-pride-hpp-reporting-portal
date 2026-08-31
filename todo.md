@@ -1,0 +1,25 @@
+# Project TODO
+
+- [x] Replace scaffold-specific authentication with local credential authentication, secure sessions, password policy, and MFA enrollment/verification flows.
+- [x] Design an extensible Microsoft Entra ID federation boundary without configuring external tenant secrets.
+- [x] Implement tenant-scoped role-based authorization for platform administrators, tenant administrators, analysts, and customers.
+- [ ] Implement a full administrator account lifecycle console for creating or inviting users, assigning access, disabling accounts, resetting MFA, and reviewing access activity.
+- [ ] Implement file upload governance for CSV/XLSX inputs, including allowlisting, size limits, validation, provenance, and secure storage abstraction.
+- [ ] Implement source field profiling and dataset mapping for HPP outreach statuses, call outcomes, and report-ready datasets.
+- [ ] Implement administrator report configuration, report publication, tabular filters, and accessible dashboard visualizations.
+- [ ] Implement a dedicated customer portal exposing only tenant-authorized published reports and permitted filters.
+- [ ] Implement append-only audit records for sign-ins, security events, lifecycle changes, uploads, publishing, and report access, including before/after values.
+- [ ] Implement an advanced audit center with filtering, export preparation, and controlled SIEM/syslog-forwarding configuration boundaries.
+- [ ] Apply zero-trust request validation, least-privilege access controls, secure headers, CSRF defenses, rate limiting, input sanitization, and secure error handling.
+- [x] Implement structured application logging with correlation IDs, safe redaction, and operational log levels.
+- [x] Build an elegant, responsive, accessible admin and customer interface with keyboard support, contrast-safe design, and reduced-motion support.
+- [ ] Add automated unit tests for the security model, validation, auditing, and reporting logic.
+- [ ] Validate desktop and mobile layouts and review browser/runtime logs for errors.
+- [x] Write self-hosting, security, operations, architecture, application-context, and session-record documentation with no Manus runtime dependencies.
+- [ ] Create a private GitHub repository and push source, documentation, application context, and session records.
+- [x] Apply the supplied Welfare Pride logo, Roboto typography, and approved brand colors throughout the administrator and customer portal interfaces.
+- [ ] Implement expiring single-use invitations, local password recovery, MFA reset, and user-update workflows with step-up verification and secure delivery.
+- [ ] Persist normalized HPP outreach rows through an isolated parser with malware scanning, quarantining, mapping approval, and individual field-level validation.
+- [ ] Replace presentation-only dashboard and customer data with authenticated API-backed metrics, reports, and session-derived authorization state.
+- [ ] Implement server-side audit filtering, formula-safe export, retention, managed SIEM/syslog forwarding retries, and delivery monitoring.
+- [ ] Add production integration tests for authenticated account lifecycle, tenant isolation, report publishing, upload persistence, and audit filtering against PostgreSQL and Redis.
