@@ -1,41 +1,107 @@
 import type { NextFunction, Request, Response } from "express";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
+import { hash as argonHash, verify as argonVerify, Algorithm } from "@node-rs/argon2";
 
-export const ROLES = ["platform_admin", "tenant_admin", "analyst", "customer"] as const;
+export const ROLES = ["super_admin", "admin", "manager", "view_only"] as const;
 export type Role = (typeof ROLES)[number];
-export type SessionClaims = { sub: string; role: Role; tenantId: string | null; csrf: string; stage: "full" | "mfa_verify" | "mfa_enroll" };
-export type AuthenticatedRequest = Request & { session?: SessionClaims; requestId?: string; ipHash?: string };
 
-const SESSION_COOKIE = "__Host-wp_session";
-const ACCESS_ROLES: Record<Role, Role[]> = {
-  platform_admin: ROLES.slice() as Role[],
-  tenant_admin: ["tenant_admin", "analyst", "customer"],
-  analyst: ["analyst", "customer"],
-  customer: ["customer"],
+const LEGACY_ROLE_MAP: Record<string, Role> = {
+  platform_admin: "super_admin",
+  tenant_admin: "admin",
+  analyst: "manager",
+  customer: "view_only",
+};
+export function canonicalRole(role: string): Role {
+  if ((ROLES as readonly string[]).includes(role)) return role as Role;
+  return LEGACY_ROLE_MAP[role] ?? "view_only";
+}
+
+export type SessionClaims = {
+  sub: string;
+  role: Role;
+  tenantId: string | null;
+  csrf: string;
+  stage: "full" | "mfa_verify" | "mfa_enroll";
+  displayName?: string;
+  email?: string;
+};
+export type AuthenticatedRequest = Request & {
+  session?: SessionClaims;
+  requestId?: string;
+  ipHash?: string;
+  realIp?: string;
+  geoCountry?: string;
 };
 
-function secret() {
+const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "wp_session";
+
+const ACCESS_ROLES: Record<Role, Role[]> = {
+  super_admin: ["super_admin", "admin", "manager", "view_only"],
+  admin: ["admin", "manager", "view_only"],
+  manager: ["manager", "view_only"],
+  view_only: ["view_only"],
+};
+
+function secret(): Uint8Array {
   const configured = process.env.APP_SESSION_SECRET;
-  if (!configured || configured.length < 32) throw new Error("APP_SESSION_SECRET must contain at least 32 characters.");
+  if (!configured || configured.length < 32) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("APP_SESSION_SECRET must contain at least 32 characters in production.");
+    }
+    return new TextEncoder().encode("development-only-session-secret-min32ch!!");
+  }
   return new TextEncoder().encode(configured);
 }
 
-export function hashIp(ip: string) {
-  const salt = process.env.AUDIT_HASH_SALT || process.env.APP_SESSION_SECRET || "unconfigured";
+export function hashIp(ip: string): string {
+  const salt = process.env.AUDIT_HASH_SALT || process.env.APP_SESSION_SECRET || "welfare-audit-salt";
   return createHash("sha256").update(`${salt}:${ip}`).digest("hex");
 }
 
-export function validatePassword(password: string) {
-  return password.length >= 14 && /[a-z]/.test(password) && /[A-Z]/.test(password) && (password.match(/[0-9]/g)?.length ?? 0) >= 2 && (password.match(/[^A-Za-z0-9]/g)?.length ?? 0) >= 3;
+export function validatePassword(password: string): boolean {
+  if (typeof password !== "string") return false;
+  if (password.length < 14 || password.length > 128) return false;
+  if (!/[a-z]/.test(password)) return false;
+  if (!/[A-Z]/.test(password)) return false;
+  if ((password.match(/[0-9]/g)?.length ?? 0) < 2) return false;
+  if ((password.match(/[^A-Za-z0-9]/g)?.length ?? 0) < 3) return false;
+  return true;
 }
 
-export function mayAssignRole(actor: Role, requested: Role) {
-  return actor === "platform_admin" || (actor === "tenant_admin" && ["analyst", "customer"].includes(requested));
+export async function hashPassword(password: string): Promise<string> {
+  return argonHash(password, { algorithm: Algorithm.Argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 });
+}
+export async function verifyPassword(hash: string, password: string): Promise<boolean> {
+  try {
+    return await argonVerify(hash, password);
+  } catch {
+    return false;
+  }
 }
 
-export async function createSession(claims: Omit<SessionClaims, "csrf"> & { csrf?: string }, ttl: string = "15m") {
-  return new SignJWT({ role: claims.role, tenantId: claims.tenantId, csrf: claims.csrf ?? randomBytes(24).toString("base64url"), stage: claims.stage })
+export function mayAssignRole(actor: Role, requested: Role): boolean {
+  if (actor === "super_admin") return true;
+  if (actor === "admin") return requested === "manager" || requested === "view_only";
+  return false;
+}
+
+export function canManageTarget(actor: Role, targetRole: Role): boolean {
+  if (actor === "super_admin") return true;
+  if ((targetRole as string) === "super_admin") return false;
+  if (actor === "admin") return (targetRole as string) !== "super_admin" && (targetRole as string) !== "admin";
+  return false;
+}
+
+export async function createSession(claims: Omit<SessionClaims, "csrf"> & { csrf?: string }, ttl = "30m"): Promise<string> {
+  return new SignJWT({
+    role: claims.role,
+    tenantId: claims.tenantId,
+    csrf: claims.csrf ?? randomBytes(24).toString("base64url"),
+    stage: claims.stage,
+    displayName: claims.displayName,
+    email: claims.email,
+  })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(claims.sub)
     .setIssuedAt()
@@ -48,65 +114,134 @@ export async function createSession(claims: Omit<SessionClaims, "csrf"> & { csrf
 export async function readSession(token: string): Promise<SessionClaims | null> {
   try {
     const { payload } = await jwtVerify(token, secret(), { issuer: "welfare-pride-hpp", audience: "welfare-pride-hpp-web" });
-    if (!payload.sub || !ROLES.includes(payload.role as Role) || !["full", "mfa_verify", "mfa_enroll"].includes(String(payload.stage))) return null;
-    return { sub: payload.sub, role: payload.role as Role, tenantId: typeof payload.tenantId === "string" ? payload.tenantId : null, csrf: String(payload.csrf), stage: payload.stage as SessionClaims["stage"] };
-  } catch { return null; }
+    if (!payload.sub) return null;
+    const role = canonicalRole(String(payload.role));
+    if (!ROLES.includes(role)) return null;
+    const stage = String(payload.stage);
+    if (!["full", "mfa_verify", "mfa_enroll"].includes(stage)) return null;
+    return {
+      sub: payload.sub,
+      role,
+      tenantId: typeof payload.tenantId === "string" ? payload.tenantId : null,
+      csrf: String(payload.csrf),
+      stage: stage as SessionClaims["stage"],
+      displayName: typeof payload.displayName === "string" ? payload.displayName : undefined,
+      email: typeof payload.email === "string" ? payload.email : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
-export async function sessionMiddleware(req: AuthenticatedRequest, _res: Response, next: NextFunction) {
+export async function sessionMiddleware(req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> {
   const token = req.headers.cookie?.split(";").map(item => item.trim()).find(item => item.startsWith(`${SESSION_COOKIE}=`))?.slice(`${SESSION_COOKIE}=`.length);
-  req.session = token ? await readSession(token) ?? undefined : undefined;
-  req.ipHash = hashIp(req.ip || "unknown");
+  req.session = token ? (await readSession(token)) ?? undefined : undefined;
+  const ip = req.realIp || req.ip || "unknown";
+  req.ipHash = hashIp(ip);
   next();
 }
 
-export function requireSession(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  if (!req.session || req.session.stage !== "full") return res.status(401).json({ error: "AUTHENTICATION_REQUIRED", requestId: req.requestId });
-  next();
-}
-
-export function requireRole(...roles: Role[]) {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.session || req.session.stage !== "full" || !roles.some(role => ACCESS_ROLES[req.session!.role].includes(role))) return res.status(403).json({ error: "ACCESS_DENIED", requestId: req.requestId });
-    next();
-  };
-}
-
-export function verifyCsrf(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
-  const origin = req.header("origin");
-  const expectedOrigin = process.env.APP_ORIGIN;
-  if (origin && expectedOrigin && origin !== expectedOrigin) return res.status(403).json({ error: "ORIGIN_REJECTED", requestId: req.requestId });
-  if (req.session?.stage === "full") {
-    const provided = req.header("x-csrf-token") || "";
-    const expected = req.session.csrf || "";
-    if (!provided || provided.length !== expected.length || !timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) return res.status(403).json({ error: "CSRF_REJECTED", requestId: req.requestId });
+export function requireSession(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  if (!req.session || req.session.stage !== "full") {
+    res.status(401).json({ error: "AUTHENTICATION_REQUIRED", requestId: req.requestId });
+    return;
   }
   next();
 }
 
-export function attachSession(res: Response, token: string) {
-  const secure = process.env.NODE_ENV === "production";
-  res.cookie(SESSION_COOKIE, token, { httpOnly: true, secure, sameSite: "strict", path: "/", maxAge: 15 * 60 * 1000 });
+export function requireRole(...roles: Role[]) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.session || req.session.stage !== "full") {
+      res.status(401).json({ error: "AUTHENTICATION_REQUIRED", requestId: req.requestId });
+      return;
+    }
+    const actor = req.session.role;
+    const allowed = ACCESS_ROLES[actor] ?? [];
+    if (!roles.some(role => allowed.includes(role))) {
+      res.status(403).json({ error: "ACCESS_DENIED", requestId: req.requestId });
+      return;
+    }
+    next();
+  };
 }
 
-export function clearSession(res: Response) { res.clearCookie(SESSION_COOKIE, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", path: "/" }); }
+export function verifyCsrf(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
+  const origin = req.header("origin");
+  const expectedOrigin = process.env.APP_ORIGIN;
+  if (origin && expectedOrigin && origin !== expectedOrigin) {
+    res.status(403).json({ error: "ORIGIN_REJECTED", requestId: req.requestId });
+    return;
+  }
+  if (req.session?.stage === "full") {
+    const provided = req.header("x-csrf-token") || "";
+    const expected = req.session.csrf || "";
+    if (!provided || provided.length !== expected.length || !timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) {
+      res.status(403).json({ error: "CSRF_REJECTED", requestId: req.requestId });
+      return;
+    }
+  }
+  next();
+}
 
-function encryptionKey() {
+export function attachSession(res: Response, token: string): void {
+  const secure = process.env.NODE_ENV === "production" && process.env.COOKIE_INSECURE !== "true";
+  res.cookie(SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 30 * 60 * 1000,
+  });
+}
+
+export function clearSession(res: Response): void {
+  const secure = process.env.NODE_ENV === "production" && process.env.COOKIE_INSECURE !== "true";
+  res.clearCookie(SESSION_COOKIE, {
+    httpOnly: true,
+    secure,
+    sameSite: "lax",
+    path: "/",
+  });
+}
+
+function encryptionKey(): Buffer {
   const key = process.env.APP_ENCRYPTION_KEY;
-  if (!key) throw new Error("APP_ENCRYPTION_KEY is required for MFA secrets.");
+  if (!key) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("APP_ENCRYPTION_KEY is required for MFA secrets in production.");
+    }
+    return Buffer.from("01234567890123456789012345678901");
+  }
   const decoded = Buffer.from(key, "base64");
-  if (decoded.length !== 32) throw new Error("APP_ENCRYPTION_KEY must decode to 32 bytes.");
+  if (decoded.length !== 32) throw new Error("APP_ENCRYPTION_KEY must decode to exactly 32 bytes (base64).");
   return decoded;
 }
 
-export function encryptSecret(value: string) {
-  const iv = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
-  return [iv, cipher.update(value, "utf8"), cipher.final(), cipher.getAuthTag()].map(part => part.toString("base64url")).join(".");
+export function encryptSecret(value: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const ct = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  return [iv, ct, cipher.getAuthTag()].map(part => part.toString("base64url")).join(".");
 }
 
-export function decryptSecret(value: string) {
+export function decryptSecret(value: string): string {
   const [iv, ciphertext, tag] = value.split(".").map(part => Buffer.from(part, "base64url"));
-  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), iv); decipher.setAuthTag(tag);
+  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), iv);
+  decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+}
+
+export function generateRecoveryCodes(count = 8): string[] {
+  const codes: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const raw = randomBytes(5).toString("hex").toUpperCase();
+    codes.push(`${raw.slice(0, 4)}-${raw.slice(4)}`);
+  }
+  return codes;
+}
+
+export function hashRecoveryCode(code: string): string {
+  const norm = code.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return createHash("sha256").update(`mfa-recovery:${norm}`).digest("hex");
 }

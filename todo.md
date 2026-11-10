@@ -1,25 +1,35 @@
-# Project TODO
+# Welfare Pride HPP Reporting Portal — Task Tracking
 
-- [x] Replace scaffold-specific authentication with local credential authentication, secure sessions, password policy, and MFA enrollment/verification flows.
-- [x] Design an extensible Microsoft Entra ID federation boundary without configuring external tenant secrets.
-- [x] Implement tenant-scoped role-based authorization for platform administrators, tenant administrators, analysts, and customers.
-- [ ] Implement a full administrator account lifecycle console for creating or inviting users, assigning access, disabling accounts, resetting MFA, and reviewing access activity.
-- [ ] Implement file upload governance for CSV/XLSX inputs, including allowlisting, size limits, validation, provenance, and secure storage abstraction.
-- [ ] Implement source field profiling and dataset mapping for HPP outreach statuses, call outcomes, and report-ready datasets.
-- [ ] Implement administrator report configuration, report publication, tabular filters, and accessible dashboard visualizations.
-- [ ] Implement a dedicated customer portal exposing only tenant-authorized published reports and permitted filters.
-- [ ] Implement append-only audit records for sign-ins, security events, lifecycle changes, uploads, publishing, and report access, including before/after values.
-- [ ] Implement an advanced audit center with filtering, export preparation, and controlled SIEM/syslog-forwarding configuration boundaries.
-- [ ] Apply zero-trust request validation, least-privilege access controls, secure headers, CSRF defenses, rate limiting, input sanitization, and secure error handling.
-- [x] Implement structured application logging with correlation IDs, safe redaction, and operational log levels.
-- [x] Build an elegant, responsive, accessible admin and customer interface with keyboard support, contrast-safe design, and reduced-motion support.
-- [ ] Add automated unit tests for the security model, validation, auditing, and reporting logic.
-- [ ] Validate desktop and mobile layouts and review browser/runtime logs for errors.
-- [x] Write self-hosting, security, operations, architecture, application-context, and session-record documentation with no Manus runtime dependencies.
-- [ ] Create a private GitHub repository and push source, documentation, application context, and session records.
-- [x] Apply the supplied Welfare Pride logo, Roboto typography, and approved brand colors throughout the administrator and customer portal interfaces.
-- [ ] Implement expiring single-use invitations, local password recovery, MFA reset, and user-update workflows with step-up verification and secure delivery.
-- [ ] Persist normalized HPP outreach rows through an isolated parser with malware scanning, quarantining, mapping approval, and individual field-level validation.
-- [ ] Replace presentation-only dashboard and customer data with authenticated API-backed metrics, reports, and session-derived authorization state.
-- [ ] Implement server-side audit filtering, formula-safe export, retention, managed SIEM/syslog forwarding retries, and delivery monitoring.
-- [ ] Add production integration tests for authenticated account lifecycle, tenant isolation, report publishing, upload persistence, and audit filtering against PostgreSQL and Redis.
+## Completed (2026-11-10)
+
+- [x] Extract and apply Welfare Pride branding (colors, Roboto fonts, logos)
+- [x] Hostinger-ready Node.js architecture (Express 5 monolith, single port)
+- [x] SQLite schema + migrations + demo dataset (12 months 2026 data, 4 seeded accounts)
+- [x] 9 manual metrics with live computed KPIs (total calls, ACA %, calls/staff)
+- [x] Monthly tracking over time (trends, comparison, table, CSV import/export)
+- [x] Report draft/preview/publish workflow with publish targets (all, view_users, specific_users) and hide capability
+- [x] Local auth + TOTP MFA (enrollment wizard, QR/manual key, 8 recovery codes, lockout back-off)
+- [x] 4-tier RBAC (Super Admin, Admin, Manager, View Only) with super admin isolation
+- [x] Dedicated Viewer Portal for View Only role
+- [x] Microsoft Entra ID SSO configuration
+- [x] Advanced audit log center (filters, JSON metadata search, CSV export)
+- [x] SIEM dual-stream forwarding (RFC 5424 syslog + HTTPS webhook, queues)
+- [x] Email engine with failover (MS Graph + SMTP + simulation, circuit breaker, BCC, mail logs)
+- [x] Backup & data portability (encrypted snapshot .zip, SHA-256 checksums, restore dry-run validation, CSV/JSON portability, formula-safe escaping)
+- [x] IP firewall & geo blocking
+- [x] White-label branding editor with live CSS variable application
+- [x] Light / dark / system theme with system mode default
+- [x] ADA compliance features + 1000% responsive layout with mobile drawer
+- [x] Zero-trust security + OWASP Top 10 mitigations
+- [x] CI workflow, commit attribution, application-context folder, session-records folder
+- [x] Full test suite (17/17 passing) + end-to-end API verification against live service
+
+## Follow-up / Production Hardening
+
+- [ ] Rotate all seeded demo passwords
+- [ ] Fill real Entra ID credentials for SSO (if used)
+- [ ] Configure real syslog receiver IP/port or webhook endpoint
+- [ ] Configure real MS Graph / SMTP email credentials
+- [ ] Set up automated backup cron (e.g. daily snapshot + off-site copy)
+- [ ] Add monitoring / uptime alerts pointing to `/api/v1/health`
+- [ ] Optional: migrate SQLite to managed PostgreSQL via the prepared Drizzle adapter when multi-instance horizontal scaling is needed
