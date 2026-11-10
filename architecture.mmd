@@ -1,0 +1,19 @@
+flowchart LR
+    U[Users: Super Admin / Admin / Manager / View Only] -->|local auth + TOTP MFA| AUTH[Auth & Session Layer]
+    AUTH --> RBAC[4-Tier RBAC Guards]
+    RBAC --> M[9 Manual Metrics Entry & KPIs]
+    RBAC --> R[Report Authoring / Publish / Hide]
+    RBAC --> AUD[Audit Log Center]
+    RBAC --> ADM[SIEM / Email / Backup / IP Firewall / Branding]
+    M --> DB[(SQLite / PostgreSQL)]
+    R --> DB
+    AUD --> DB
+    AUD --> SIEM[RFC 5424 Syslog local0 + Webhook]
+    ADM --> EM[Email Engine with Failover]
+    ADM --> BK[Encrypted Backup Snapshots]
+    style U fill:#5A92C9,color:#fff
+    style AUTH fill:#D58240,color:#fff
+    style DB fill:#334155,color:#fff
+    style SIEM fill:#475569,color:#fff
+    style EM fill:#475569,color:#fff
+    style BK fill:#475569,color:#fff
