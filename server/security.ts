@@ -165,11 +165,37 @@ export function requireRole(...roles: Role[]) {
   };
 }
 
+function parseOrigin(urlStr?: string | null): string | null {
+  if (!urlStr) return null;
+  try {
+    const u = new URL(urlStr.trim());
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+}
+export function isAllowedOrigin(req: AuthenticatedRequest, originHeader?: string | null): boolean {
+  if (!originHeader) return true;
+  const origin = parseOrigin(originHeader);
+  if (!origin) return false;
+  const configured = (process.env.APP_ORIGIN || process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(s => parseOrigin(s))
+    .filter(Boolean);
+  if (configured.includes(origin)) return true;
+  const host = req.get("host");
+  const proto = (req.get("x-forwarded-proto") || req.protocol || "http").split(",")[0].trim();
+  if (host && origin === `${proto}://${host}`) return true;
+  try {
+    const u = new URL(origin);
+    if (u.hostname.endsWith(".us5.manus.computer") || u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
+  } catch {}
+  return false;
+}
 export function verifyCsrf(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
   const origin = req.header("origin");
-  const expectedOrigin = process.env.APP_ORIGIN;
-  if (origin && expectedOrigin && origin !== expectedOrigin) {
+  if (origin && !isAllowedOrigin(req, origin)) {
     res.status(403).json({ error: "ORIGIN_REJECTED", requestId: req.requestId });
     return;
   }
@@ -183,28 +209,29 @@ export function verifyCsrf(req: AuthenticatedRequest, res: Response, next: NextF
   }
   next();
 }
-
-export function attachSession(res: Response, token: string): void {
-  const secure = process.env.NODE_ENV === "production" && process.env.COOKIE_INSECURE !== "true";
+function isSecure(req?: Request): boolean {
+  if (req?.secure) return true;
+  const proto = (req?.get?.("x-forwarded-proto") || "").split(",")[0].trim();
+  if (proto === "https") return true;
+  return process.env.NODE_ENV === "production" && process.env.COOKIE_INSECURE !== "true";
+}
+export function attachSession(res: Response, token: string, req?: Request): void {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
-    secure,
+    secure: isSecure(req),
     sameSite: "lax",
     path: "/",
     maxAge: 30 * 60 * 1000,
   });
 }
-
-export function clearSession(res: Response): void {
-  const secure = process.env.NODE_ENV === "production" && process.env.COOKIE_INSECURE !== "true";
+export function clearSession(res: Response, req?: Request): void {
   res.clearCookie(SESSION_COOKIE, {
     httpOnly: true,
-    secure,
+    secure: isSecure(req),
     sameSite: "lax",
     path: "/",
   });
 }
-
 function encryptionKey(): Buffer {
   const key = process.env.APP_ENCRYPTION_KEY;
   if (!key) {

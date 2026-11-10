@@ -246,7 +246,7 @@ app.post("/api/v1/auth/login", limiters.authStrict, async (req: AuthenticatedReq
         { sub: user.id, role: user.role, tenantId: user.tenant_id, stage: "mfa_enroll", displayName: user.display_name, email: user.email },
         "10m",
       );
-      attachSession(res, pendingSession);
+      attachSession(res, pendingSession, req);
       await audit(req, "auth.mfa.enrollment_required", 200, "user", user.id);
       return res.json({ stage: "mfa_enroll", userId: user.id });
     }
@@ -254,7 +254,7 @@ app.post("/api/v1/auth/login", limiters.authStrict, async (req: AuthenticatedReq
       { sub: user.id, role: user.role, tenantId: user.tenant_id, stage: "mfa_verify", displayName: user.display_name, email: user.email },
       "10m",
     );
-    attachSession(res, pendingSession);
+    attachSession(res, pendingSession, req);
     await audit(req, "auth.mfa.challenge_issued", 200, "user", user.id);
     return res.json({ stage: "mfa_verify", userId: user.id });
   }
@@ -267,7 +267,7 @@ app.post("/api/v1/auth/login", limiters.authStrict, async (req: AuthenticatedReq
     displayName: user.display_name,
     email: user.email,
   });
-  attachSession(res, fullSession);
+  attachSession(res, fullSession, req);
   await audit(req, "auth.login.succeeded", 200, "user", user.id);
   res.json({ stage: "full", user: sanitizeUser(user) });
 });
@@ -341,7 +341,7 @@ app.post("/api/v1/auth/mfa/verify", limiters.authStrict, async (req: Authenticat
     displayName: user.display_name,
     email: user.email,
   });
-  attachSession(res, fullSession);
+  attachSession(res, fullSession, req);
   await audit(req, usedRecovery ? "auth.mfa.recovery_used" : "auth.mfa.succeeded", 200, "user", user.id);
   res.json({ ok: true, user: sanitizeUser(findUserById(user.id)!), recoveryCodes });
 });
@@ -358,7 +358,7 @@ app.get("/api/v1/auth/session", async (req: AuthenticatedRequest, res) => {
 
 app.post("/api/v1/auth/logout", requireSession, async (req: AuthenticatedRequest, res) => {
   const actor = actorInfo(req);
-  clearSession(res);
+  clearSession(res, req);
   await recordAudit({
     requestId: req.requestId ?? "unknown",
     ...actor,

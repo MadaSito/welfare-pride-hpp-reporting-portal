@@ -66,3 +66,33 @@ describe("secret encryption", () => {
     expect(decryptSecret(encryptSecret(raw))).toBe(raw);
   });
 });
+
+import { isAllowedOrigin } from "./security";
+
+describe("isAllowedOrigin", () => {
+  const req = (host = "3000-xyz.us5.manus.computer", proto = "https") =>
+    ({ get: (h: string) => (h.toLowerCase() === "host" ? host : proto), header: () => {} } as any);
+
+  it("permits same-origin matching host header", () => {
+    expect(isAllowedOrigin(req(), "https://3000-xyz.us5.manus.computer")).toBe(true);
+  });
+  it("permits configured APP_ORIGIN", () => {
+    const prev = process.env.APP_ORIGIN;
+    process.env.APP_ORIGIN = "https://app.welfarepride.org";
+    try {
+      expect(isAllowedOrigin(req(), "https://app.welfarepride.org")).toBe(true);
+    } finally {
+      process.env.APP_ORIGIN = prev;
+    }
+  });
+  it("permits manus preview and localhost domains", () => {
+    expect(isAllowedOrigin(req(), "http://localhost:5173")).toBe(true);
+    expect(isAllowedOrigin(req(), "https://3000-abc-def.us5.manus.computer")).toBe(true);
+  });
+  it("rejects untrusted cross-site origins", () => {
+    expect(isAllowedOrigin(req(), "https://evil.attacker.com")).toBe(false);
+  });
+  it("permits non-browser requests without origin header", () => {
+    expect(isAllowedOrigin(req())).toBe(true);
+  });
+});

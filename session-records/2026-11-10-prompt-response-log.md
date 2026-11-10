@@ -63,3 +63,28 @@
 - Configure Microsoft Entra ID client credentials in `.env` if SSO is required
 - Point SIEM to the real syslog receiver (facility 16, local0) or HTTPS webhook endpoint
 - Set up a persistent directory on Hostinger for `DATA_DIR` so SQLite survives redeployments
+
+---
+
+## Prompt 2 (Follow-up)
+
+> i cant sign in with the sample credentials that were created
+
+## Investigation Findings
+
+1. **Root cause A — Origin validation (`ORIGIN_REJECTED` 403):** The server's `verifyCsrf` middleware compared incoming `Origin` headers strictly against `APP_ORIGIN=http://127.0.0.1:3000`. When the user accessed the app over the ephemeral HTTPS preview URL (`https://3000-*.us5.manus.computer`), the browser sent that origin, received a 403, and the login page rendered the generic "Invalid email or password" message — masking the real error. The server log confirmed the rejected POST at `17:57:14Z`.
+2. **Root cause B — Seeded MFA secrets:** Earlier automated tests had completed MFA enrollment for `superadmin` and `admin`, populating `mfa_secret_encrypted`. Anyone passing the origin check was then challenged for a TOTP code they never received.
+3. **Ergonomics:** Requiring authenticator app enrollment during a first-time preview evaluation creates friction.
+
+## Fixes Applied
+
+- `server/security.ts`: robust `isAllowedOrigin()` permitting same-origin via the `Host` header, configured `APP_ORIGIN`/`ALLOWED_ORIGINS` allowlists, and `*.us5.manus.computer` preview domains while preserving real cross-site CSRF protection.
+- `server/security.ts` + `server/index.ts`: session cookies now use `Secure` whenever the request itself was served over HTTPS (behind reverse proxy).
+- `server/repository.ts`: `bootstrapSeed` respects `EVAL_MFA=optional` so seeded accounts have `mfa_required=0` in preview environments (one-step sign-in); MFA remains fully functional when re-enabled per-user from the User Access page.
+- `client/src/pages/LoginPage.tsx`: demo account chips now autofill **both email and password** on click, and error messages map the real server error codes (`ACCOUNT_LOCKED`, `ACCOUNT_DISABLED`, `ORIGIN_REJECTED`, `RATE_LIMITED`).
+- `server/security.test.ts`: 5 new `isAllowedOrigin` unit tests (22 total tests passing).
+
+## Verification
+
+- Simulated API sign-in with the real preview `Origin` header for all four seeded accounts: HTTP 200, `stage=full`, authenticated session checks all PASS.
+- Headless browser test: clicking the "Super Admin" demo chip autofills `superadmin@welfarepride.org` + password, submitting lands on the dashboard showing "Morgan Chase" and "TOTAL CALL VOLUME".

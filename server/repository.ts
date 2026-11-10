@@ -998,13 +998,16 @@ export async function bootstrapSeed(): Promise<{ adminEmail: string; adminPasswo
 
   const defaultTenantId = ensureDefaultTenant("Welfare Pride");
 
-  // Four demo accounts — one per RBAC tier
+  // Four demo accounts — one per RBAC tier.
+  // In preview/eval environments EVAL_MFA=optional makes sign-in one-step;
+  // in production (unset), accounts get mfa_required=true with guided first-time enrollment.
+  const mfaForAdmin = process.env.EVAL_MFA === "optional" || process.env.PREVIEW_MODE === "true" ? false : true;
   const superHash = await hashPassword(process.env.BOOTSTRAP_SUPERADMIN_PASSWORD || "SuperAdmin2026!#W");
-  createUser({ tenantId: defaultTenantId, email: process.env.BOOTSTRAP_SUPERADMIN_EMAIL || "superadmin@welfarepride.org", displayName: "Morgan Chase (Super Admin)", role: "super_admin", passwordHash: superHash, status: "active", mfaRequired: true });
+  createUser({ tenantId: defaultTenantId, email: process.env.BOOTSTRAP_SUPERADMIN_EMAIL || "superadmin@welfarepride.org", displayName: "Morgan Chase (Super Admin)", role: "super_admin", passwordHash: superHash, status: "active", mfaRequired: mfaForAdmin });
   const adminHash = await hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD || "AdminPass2026!#W");
-  createUser({ tenantId: defaultTenantId, email: process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@welfarepride.org", displayName: "Taylor Brooks (Admin)", role: "admin", passwordHash: adminHash, status: "active", mfaRequired: true });
+  createUser({ tenantId: defaultTenantId, email: process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@welfarepride.org", displayName: "Taylor Brooks (Admin)", role: "admin", passwordHash: adminHash, status: "active", mfaRequired: mfaForAdmin });
   const mgrHash = await hashPassword(process.env.BOOTSTRAP_MANAGER_PASSWORD || "ManagerPass2026!#W");
-  createUser({ tenantId: defaultTenantId, email: "manager@welfarepride.org", displayName: "Jordan Lee (Outreach Manager)", role: "manager", passwordHash: mgrHash, status: "active", mfaRequired: true });
+  createUser({ tenantId: defaultTenantId, email: "manager@welfarepride.org", displayName: "Jordan Lee (Outreach Manager)", role: "manager", passwordHash: mgrHash, status: "active", mfaRequired: mfaForAdmin });
   const viewHash = await hashPassword("ViewerPass2026!#W");
   createUser({ tenantId: defaultTenantId, email: "viewer@welfarepride.org", displayName: "Alex Rivera (View Only)", role: "view_only", passwordHash: viewHash, status: "active", mfaRequired: false });
   // 12 months of realistic 2026 HPP sample metric data

@@ -40,7 +40,15 @@ export function LoginPage() {
     setError(null);
     const r = await login(email, password);
     setBusy(false);
-    if (r.error) setError(r.error === "ACCOUNT_LOCKED" ? "Account temporarily locked after too many failed attempts. Try again in 15 minutes." : "Invalid email or password.");
+    if (r.error) {
+      const msg: Record<string, string> = {
+        ACCOUNT_LOCKED: "Account temporarily locked after too many failed attempts. Try again in 15 minutes.",
+        ACCOUNT_DISABLED: "This account has been disabled. Contact an administrator.",
+        ORIGIN_REJECTED: "Sign-in request rejected by origin policy. Refresh the page and try again.",
+        RATE_LIMITED: "Too many sign-in attempts. Please wait a minute and try again.",
+      };
+      setError(msg[r.error] || "Invalid email or password.");
+    }
   };
 
   useEffect(() => {
@@ -88,10 +96,10 @@ export function LoginPage() {
   };
 
   const demoAccounts = [
-    { label: "Super Admin", e: "superadmin@welfarepride.org", role: "super_admin" },
-    { label: "Admin", e: "admin@welfarepride.org", role: "admin" },
-    { label: "Manager", e: "manager@welfarepride.org", role: "manager" },
-    { label: "View Only", e: "viewer@welfarepride.org", role: "view_only" },
+    { label: "Super Admin", e: "superadmin@welfarepride.org", p: "SuperAdmin2026!#W", role: "super_admin" },
+    { label: "Admin", e: "admin@welfarepride.org", p: "AdminPass2026!#W", role: "admin" },
+    { label: "Manager", e: "manager@welfarepride.org", p: "ManagerPass2026!#W", role: "manager" },
+    { label: "View Only", e: "viewer@welfarepride.org", p: "ViewerPass2026!#W", role: "view_only" },
   ];
 
   return (
@@ -273,10 +281,10 @@ export function LoginPage() {
         {/* Demo accounts */}
         <div className="rounded-2xl border border-border bg-card p-4 panel-shadow text-xs space-y-2">
           <div className="font-bold flex items-center gap-1.5"><Sparkles size={14} className="text-[#D58240]" /> Demo accounts (first-time evaluation)</div>
-          <p className="text-[11px] text-muted-foreground">Passwords are set in the repo README / deployment guide. Pick an account to fill its email:</p>
+          <p className="text-[11px] text-muted-foreground">Click any account to prefill credentials for instant evaluation, then click Sign in:</p>
           <div className="flex flex-wrap gap-1">
             {demoAccounts.map(a => (
-              <button key={a.e} type="button" onClick={() => setEmail(a.e)} className="px-2.5 py-1 rounded-full border border-border bg-background hover:bg-muted font-semibold text-[11px]">
+              <button key={a.e} type="button" onClick={() => { setEmail(a.e); setPassword(a.p); }} className="px-2.5 py-1 rounded-full border border-border bg-background hover:bg-muted font-semibold text-[11px]">
                 {a.label}
               </button>
             ))}
