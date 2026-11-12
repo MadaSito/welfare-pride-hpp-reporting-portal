@@ -1,8 +1,27 @@
-import { describe, expect, it } from "vitest";
-import { computeKpis, type MonthlyMetric, listUsers, upsertMonthlyMetric, findMonthlyMetric, listMonthlyMetrics, createUser, hashPassword } from "./repository";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { rmSync } from "node:fs";
+const isolated = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const dir = mkdtempSync(path.join(tmpdir(), "welfare-repository-test-"));
+  const oldData = process.env.DATA_DIR, oldSqlite = process.env.SQLITE_PATH;
+  process.env.DATA_DIR = dir;
+  process.env.SQLITE_PATH = path.join(dir, "test.sqlite");
+  return { dir, oldData, oldSqlite };
+});
+import { computeKpis, type MonthlyMetric, db, runMigrations } from "./repository";
 import { mayAssignRole, canManageTarget } from "./security";
 import { ipRuleCheck } from "./cloudflare";
 import { exportMetricsCsv } from "./backup";
+
+beforeAll(() => runMigrations());
+afterAll(() => {
+  db.close();
+  rmSync(isolated.dir, { recursive: true, force: true });
+  if (isolated.oldData === undefined) delete process.env.DATA_DIR; else process.env.DATA_DIR = isolated.oldData;
+  if (isolated.oldSqlite === undefined) delete process.env.SQLITE_PATH; else process.env.SQLITE_PATH = isolated.oldSqlite;
+});
 
 describe("computed KPIs", () => {
   it("computes totals and rates correctly from the 9 manual metrics", () => {

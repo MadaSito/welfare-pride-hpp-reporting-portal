@@ -1,5 +1,5 @@
 import React from "react";
-import { Route, Switch, Redirect } from "wouter";
+import { Route, Switch, Redirect, useLocation } from "wouter";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { BrandingProvider } from "./contexts/BrandingContext";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
@@ -15,10 +15,11 @@ import { BackupPage } from "./pages/BackupPage";
 import { BrandingPage } from "./pages/BrandingPage";
 import { SecurityPage } from "./pages/SecurityPage";
 import { ViewerPortalPage } from "./pages/ViewerPortalPage";
-import { LoginPage } from "./pages/LoginPage";
+import { LoginPage, discardPendingMagicLink } from "./pages/LoginPage";
 
 function Shell() {
-  const { stage, isViewOnly, isSuperAdmin, isAdmin, isManager, loading } = useAuth();
+  const { stage, isViewOnly, isSuperAdmin, isAdmin, isManager, loading, logout } = useAuth();
+  const [location, setLocation] = useLocation();
 
   if (loading) {
     return (
@@ -30,6 +31,17 @@ function Shell() {
 
   if (stage !== "full") {
     return <LoginPage />;
+  }
+
+  if (location === "/magic-link") {
+    return <Layout><section className="mx-auto max-w-xl space-y-4 rounded-2xl border border-border bg-card p-6">
+      <h1 className="text-lg font-bold">You are already signed in</h1>
+      <p className="text-sm text-muted-foreground">To switch accounts, sign out and request a new link in this browser. Your existing session will not be replaced automatically.</p>
+      <div className="flex flex-wrap gap-3">
+        <button type="button" className="focus-ring rounded-xl bg-[#376b9b] px-4 py-3 text-sm font-bold text-white" onClick={async () => { discardPendingMagicLink(); await logout(); setLocation("/"); }}>Sign out and request a new link</button>
+        <a className="focus-ring rounded-xl border border-border px-4 py-3 text-sm font-bold" href="/">Stay signed in</a>
+      </div>
+    </section></Layout>;
   }
 
   // View Only role sees simplified portal

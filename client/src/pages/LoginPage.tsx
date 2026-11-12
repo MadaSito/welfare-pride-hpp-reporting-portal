@@ -1,11 +1,21 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useBranding } from "../contexts/BrandingContext";
-import { Mail, KeyRound, Shield, AlertCircle, CheckCircle, Copy, Check, Eye, EyeOff } from "lucide-react";
+import { Mail, KeyRound, Shield, AlertCircle, CheckCircle, Copy, Check, Eye, EyeOff, Building2 } from "lucide-react";
 import QRCode from "qrcode";
 
+// Capture and remove the fragment before the app waits for its initial session check.
+// The token remains in memory only and is never included in a request URL.
+const isMagicLinkLanding = typeof window !== "undefined" && window.location.pathname === "/magic-link";
+let pendingMagicLinkToken: string | null = null;
+if (isMagicLinkLanding && window.location.hash) {
+  pendingMagicLinkToken = new URLSearchParams(window.location.hash.slice(1)).get("token");
+  window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+}
+export function discardPendingMagicLink() { pendingMagicLinkToken = null; }
+
 export function LoginPage() {
-  const { stage, login, startMfaEnroll, verifyMfa, changeInitialPassword, refresh, logout } = useAuth();
+  const { stage, csrf, login, startMfaEnroll, verifyMfa, changeInitialPassword, refresh, logout } = useAuth();
   const { brand } = useBranding();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,6 +25,9 @@ export function LoginPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [linkToken, setLinkToken] = useState<string | null>(pendingMagicLinkToken);
+  const [linkMissing, setLinkMissing] = useState(isMagicLinkLanding && !pendingMagicLinkToken);
+  const [linkRequested, setLinkRequested] = useState(false);
 
   // MFA verify
   const [mfaCode, setMfaCode] = useState("");
@@ -31,22 +44,78 @@ export function LoginPage() {
 
   const companyName = brand?.company_name || "Welfare Pride";
   const iconUrl = brand?.icon_url || "/assets/branding/welfare-pride-icon.png";
+  const tagline = !brand?.tagline || brand.tagline === "Health Plan Outreach Reporting Portal"
+    ? "Outreach Reporting Dashboard Portal"
+    : brand.tagline;
+
+  const onLinkRequest = async () => {
+    if (!email.trim() || !(document.getElementById("login-email") as HTMLInputElement | null)?.checkValidity()) {
+      setError("Enter a valid email address above.");
+      document.getElementById("login-email")?.focus();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setLinkRequested(false);
+    setLinkMissing(false);
+    try {
+      const res = await fetch("/api/v1/auth/magic-link/request", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      if (!res.ok) throw new Error();
+      setLinkRequested(true);
+    } catch {
+      setError("We couldn't complete your request. Please try again later.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onLinkContinue = async () => {
+    if (!linkToken) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/v1/auth/magic-link/consume", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+        body: JSON.stringify({ token: linkToken }),
+      });
+      if (!res.ok) throw new Error();
+      pendingMagicLinkToken = null;
+      setLinkToken(null);
+      window.history.replaceState(window.history.state, "", "/");
+      await refresh();
+      // refresh() catches errors internally; offer a safe next step only on the anonymous screen.
+      setLinkMissing(true);
+    } catch {
+      setError("This sign-in link couldn't be used. Please request a new link and try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const onCredSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!email.trim() || !(document.getElementById("login-email") as HTMLInputElement | null)?.checkValidity()) {
+      setError("Enter a valid email address above.");
+      document.getElementById("login-email")?.focus();
+      return;
+    }
     setBusy(true);
     setError(null);
-    const r = await login(email, password);
-    setBusy(false);
-    if (!r.error) setPassword("");
-    if (r.error) {
-      const msg: Record<string, string> = {
-        ACCOUNT_LOCKED: "Account temporarily locked after too many failed attempts. Try again in 15 minutes.",
-        ACCOUNT_DISABLED: "This account has been disabled. Contact an administrator.",
-        ORIGIN_REJECTED: "Sign-in request rejected by origin policy. Refresh the page and try again.",
-        RATE_LIMITED: "Too many sign-in attempts. Please wait a minute and try again.",
-      };
-      setError(msg[r.error] || "Invalid email or password.");
+    try {
+      const r = await login(email, password);
+      if (!r.error) setPassword("");
+      else setError("Sign-in could not be completed. Check your details or try again later.");
+    } catch {
+      setError("Sign-in could not be completed. Check your details or try again later.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -70,7 +139,7 @@ export function LoginPage() {
     setError(null);
     const r = useRecovery ? await verifyMfa("", recoveryCode) : await verifyMfa(mfaCode);
     setBusy(false);
-    if (!r.ok) setError(useRecovery ? "Invalid or already-used recovery code." : "Invalid authenticator code. Codes rotate every 30 seconds.");
+    if (!r.ok) setError(useRecovery ? "The recovery code could not be verified. After too many attempts, wait 15 minutes and try again." : "The authenticator code could not be verified. After too many attempts, wait 15 minutes and try again.");
   };
 
   const onEnrollSubmit = async (e: React.FormEvent) => {
@@ -102,7 +171,7 @@ export function LoginPage() {
         <div className="text-center space-y-2">
           <img src={iconUrl} alt="" className="mx-auto h-14 w-14 rounded-full object-cover shadow-lg shadow-[#5A92C9]/20" />
           <h1 className="text-2xl font-bold tracking-tight">{companyName}</h1>
-          <p className="text-xs text-muted-foreground">{brand?.tagline || "HPP Reporting Portal"}</p>
+          <p className="text-sm font-medium text-muted-foreground">{tagline}</p>
         </div>
 
         {/* Card */}
@@ -230,53 +299,59 @@ export function LoginPage() {
                   {useRecovery ? "Use authenticator code instead" : "Trouble signing in? Use recovery code"}
                 </button>
               </div>
+              <button type="button" onClick={async () => { discardPendingMagicLink(); setLinkToken(null); setError(null); await logout(); }} className="focus-ring w-full py-2 text-xs font-semibold text-muted-foreground underline">Cancel and return to sign-in</button>
             </form>
-          ) : (
-            <form onSubmit={onCredSubmit} className="space-y-4">
-              <div className="space-y-1">
-                <h2 className="text-base font-bold">Sign in</h2>
-                <p className="text-xs text-muted-foreground">Local accounts require multi-factor authentication.</p>
+          ) : linkToken ? (
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <h2 className="text-lg font-bold">Continue with your sign-in link</h2>
+                <p className="text-sm leading-6 text-muted-foreground">Select continue to use this link. You will then need to complete multi-factor authentication before accessing the portal.</p>
               </div>
-              <label className="font-semibold block text-xs">
-                Email
-                <div className="relative mt-1">
-                  <Mail size={14} className="absolute left-3 top-3 text-muted-foreground" />
-                  <input
-                    type="email"
-                    required
-                    autoFocus
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    placeholder="you@organization.org"
-                    className="w-full h-11 pl-9 pr-3 rounded-xl border border-border bg-background font-semibold focus-ring text-xs"
-                  />
-                </div>
-              </label>
-              <label className="font-semibold block text-xs">
-                Password
-                <div className="relative mt-1">
-                  <KeyRound size={14} className="absolute left-3 top-3 text-muted-foreground" />
-                  <input
-                    type={showPass ? "text" : "password"}
-                    required
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
-                    className="w-full h-11 pl-9 pr-9 rounded-xl border border-border bg-background font-semibold focus-ring text-xs"
-                  />
-                  <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-3 top-3 text-muted-foreground hover:text-foreground">
-                    {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-              </label>
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-muted-foreground text-[11px]">14-char policy enforced</span>
-                <span>Contact an administrator for account recovery.</span>
-              </div>
-              {error && <div className="p-3 rounded-xl bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 text-xs flex items-center gap-2"><AlertCircle size={14} />{error}</div>}
-              <button type="submit" disabled={busy} className="touch-target w-full py-2.5 font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] disabled:opacity-50 focus-ring text-xs">
-                {busy ? "Signing in…" : "Sign in"}
+              {error && <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/15 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
+              <button type="button" onClick={onLinkContinue} disabled={busy} className="focus-ring touch-target w-full rounded-xl bg-[#a43f21] px-4 py-3 text-sm font-bold text-white hover:bg-[#843018] disabled:opacity-60">
+                {busy ? "Continuing…" : "Continue to MFA"}
               </button>
-            </form>
+              <button type="button" onClick={() => { pendingMagicLinkToken = null; setLinkToken(null); setError(null); window.history.replaceState(window.history.state, "", "/"); }} className="focus-ring w-full rounded-lg py-2 text-sm font-semibold text-muted-foreground underline underline-offset-4">Request a new link instead</button>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <h2 className="text-lg font-bold">Sign in to your account</h2>
+                <p className="text-sm leading-6 text-muted-foreground">Local accounts require multi-factor authentication.</p>
+              </div>
+              {linkMissing && <p role="status" className="rounded-xl border border-border bg-muted/40 p-3 text-sm">This sign-in link is unavailable. Request a new link below.</p>}
+              <form onSubmit={onCredSubmit} className="space-y-3">
+                <label className="block text-sm font-semibold" htmlFor="login-email">Email address</label>
+                <div className="relative">
+                  <Mail size={18} aria-hidden="true" className="absolute left-3 top-3.5 text-muted-foreground" />
+                  <input id="login-email" type="email" required autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@organization.org" className="focus-ring h-12 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm" />
+                </div>
+                <label className="block text-sm font-semibold" htmlFor="login-password">Password</label>
+                <div className="relative">
+                  <KeyRound size={18} aria-hidden="true" className="absolute left-3 top-3.5 text-muted-foreground" />
+                  <input id="login-password" type={showPass ? "text" : "password"} autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} className="focus-ring h-12 w-full rounded-xl border border-border bg-background pl-10 pr-12 text-sm" />
+                  <button type="button" onClick={() => setShowPass(!showPass)} aria-label={showPass ? "Hide password" : "Show password"} aria-pressed={showPass} className="focus-ring absolute right-1 top-1 flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground">{showPass ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}</button>
+                </div>
+                <button type="submit" disabled={busy} className="focus-ring touch-target w-full rounded-xl bg-[#376b9b] px-4 py-3 text-sm font-bold text-white hover:bg-[#29597f] disabled:opacity-60">
+                  {busy ? "Please wait…" : "Sign in with password"}
+                </button>
+              </form>
+              {error && <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/15 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
+              <div className="space-y-2 border-t border-border pt-4">
+                <button type="button" onClick={onLinkRequest} disabled={busy} className="focus-ring touch-target w-full rounded-xl bg-[#a43f21] px-4 py-3 text-sm font-bold text-white hover:bg-[#843018] disabled:opacity-60">
+                  <span className="flex items-center justify-center gap-2"><Mail size={18} aria-hidden="true" /> Email me a sign-in link</span>
+                </button>
+                <p className="text-center text-xs leading-5 text-muted-foreground">For local accounts with MFA already set up. Open the link in the same browser, then enter your MFA code.</p>
+              </div>
+              {linkRequested && <div role="status" className="rounded-xl border border-emerald-700/30 bg-emerald-500/10 p-3 text-sm leading-6 text-emerald-800 dark:text-emerald-200">If the email address is eligible, you may receive a sign-in link. Please check your inbox and spam folder.</div>}
+              <div className="space-y-2">
+                <button type="button" disabled aria-describedby="sso-unavailable" className="touch-target w-full cursor-not-allowed rounded-xl border-2 border-[#7043a3] bg-[#663590] px-4 py-3 text-sm font-bold text-white">
+                  <span className="flex items-center justify-center gap-2"><Building2 size={18} aria-hidden="true" /> Welfare Pride SSO <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">Unavailable</span></span>
+                </button>
+                <p id="sso-unavailable" className="text-center text-xs leading-5 text-muted-foreground">Welfare Pride SSO is not yet available. Use another sign-in method.</p>
+              </div>
+              <p className="text-center text-xs text-muted-foreground">Contact an administrator for account recovery.</p>
+            </div>
           )}
         </div>
 

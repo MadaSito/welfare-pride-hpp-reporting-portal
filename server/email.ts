@@ -10,11 +10,14 @@ export type OutgoingEmail = {
   correlationId?: string;
   attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
   requireNoBcc?: boolean;
+  // Credential-bearing messages are never retained, resent or failed over.
+  sensitive?: boolean;
 };
 
 type EmailResult = { ok: boolean; provider: string; status: "sent" | "failed" | "simulated" | "unknown"; error?: string; logId: string };
 const ATTACHMENT_LOG_SUBJECT = "[Attachment email: content not retained]";
 const DISABLED_LOG_SUBJECT = "[Disabled email: content not retained]";
+const SENSITIVE_LOG_SUBJECT = "[Sensitive email: content not retained]";
 const REDACTED_PROVIDER_ERROR = "Email provider failed (details redacted)";
 const ATTACHMENT_ACCEPTANCE_UNKNOWN = "The primary email provider did not confirm acceptance; acceptance may be unknown. No automatic failover was attempted. Verify with the recipient or provider before retrying.";
 const ATTACHMENT_CIRCUIT_OPEN = "Email was not attempted because the primary provider circuit is open; no automatic failover was attempted.";
@@ -79,7 +82,7 @@ async function sendViaGraph(cfg: ReturnType<typeof getEmailConfig>, email: Outgo
         contentBytes: attachment.content.toString("base64"),
       })) } : {}),
     },
-    saveToSentItems: true,
+    saveToSentItems: !email.sensitive,
   };
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(cfg.graph_sender)}/sendMail`;
   const res = await fetch(url, {
@@ -103,7 +106,8 @@ async function sendViaSmtp(cfg: ReturnType<typeof getEmailConfig>, email: Outgoi
     port: cfg.smtp_port ?? Number(process.env.SMTP_PORT || 587),
     secure,
     // secure=false selects STARTTLS, not an instruction to disable TLS.
-    ...(hasAttachments ? { requireTLS: !secure, disableFileAccess: true, disableUrlAccess: true } : {}),
+    ...(hasAttachments || email.sensitive ? { requireTLS: !secure, disableFileAccess: true, disableUrlAccess: true } : {}),
+    ...(email.sensitive ? { connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000 } : {}),
     auth: (cfg.smtp_user || process.env.SMTP_USER) ? {
       user: cfg.smtp_user || process.env.SMTP_USER || "",
       pass: cfg.smtp_pass || process.env.SMTP_PASS || "",
@@ -152,8 +156,9 @@ export async function sendEmail(email: OutgoingEmail): Promise<EmailResult> {
   const bccList = Array.from(bccSet);
   // Any supplied attachment field is treated as sensitive, including malformed inputs.
   const attachmentRequest = email.attachments !== undefined && (!Array.isArray(email.attachments) || email.attachments.length > 0);
-  const subject = attachmentRequest ? ATTACHMENT_LOG_SUBJECT : email.subject;
-  const payload = attachmentRequest ? null : (email.html || email.text || "").slice(0, 8000);
+  const nonretained = attachmentRequest || email.sensitive === true;
+  const subject = email.sensitive ? SENSITIVE_LOG_SUBJECT : attachmentRequest ? ATTACHMENT_LOG_SUBJECT : email.subject;
+  const payload = nonretained ? null : (email.html || email.text || "").slice(0, 8000);
   const primary = (cfg.primary_provider || "smtp").toLowerCase();
   const secondary = (cfg.secondary_provider || (primary === "graph" ? "smtp" : "")).toLowerCase() || null;
 
@@ -163,7 +168,7 @@ export async function sendEmail(email: OutgoingEmail): Promise<EmailResult> {
       recipient: email.to,
       bcc: bccList.join(", ") || null,
       subject,
-      payload: status === "simulated" && !attachmentRequest ? email.text || email.html || null : payload,
+      payload: status === "simulated" && !nonretained ? email.text || email.html || null : payload,
       status,
       error,
       correlation_id: email.correlationId ?? null,
@@ -175,7 +180,7 @@ export async function sendEmail(email: OutgoingEmail): Promise<EmailResult> {
     return { ok: false, provider: "none", status: "failed", error, logId };
   }
 
-  if (email.requireNoBcc && (cfg.global_bcc?.trim() || process.env.GLOBAL_EMAIL_BCC?.trim())) {
+  if ((email.requireNoBcc || email.sensitive) && (cfg.global_bcc?.trim() || process.env.GLOBAL_EMAIL_BCC?.trim())) {
     return reject("Email requires no BCC, but global BCC is configured");
   }
   if (email.attachments !== undefined && (!Array.isArray(email.attachments) || email.attachments.some(attachment =>
@@ -205,8 +210,8 @@ export async function sendEmail(email: OutgoingEmail): Promise<EmailResult> {
         circuit.primaryOk();
       } catch (primErr) {
         circuit.primaryFailed();
-        writeLog("warn", "email.primary.failed", { provider: primary, error: attachmentRequest ? REDACTED_PROVIDER_ERROR : String(primErr) });
-        if (attachmentRequest) {
+        writeLog("warn", "email.primary.failed", { provider: primary, error: nonretained ? REDACTED_PROVIDER_ERROR : String(primErr) });
+        if (nonretained) {
           // A provider error, especially a timeout, does not prove it rejected
           // the message. Never send the same attachment through another provider.
           attachmentPrimaryFailed = true;
@@ -219,7 +224,7 @@ export async function sendEmail(email: OutgoingEmail): Promise<EmailResult> {
           throw primErr;
         }
       }
-    } else if (attachmentRequest) {
+    } else if (nonretained) {
       return reject(ATTACHMENT_CIRCUIT_OPEN);
     } else if (secondary) {
       writeLog("info", "email.circuit.bypassing_primary", { using: secondary });
@@ -235,7 +240,7 @@ export async function sendEmail(email: OutgoingEmail): Promise<EmailResult> {
     return { ok: true, provider: usedProvider, status, logId };
   } catch (err) {
     const status = attachmentPrimaryFailed ? "unknown" : "failed";
-    const errorStr = attachmentPrimaryFailed ? ATTACHMENT_ACCEPTANCE_UNKNOWN : attachmentRequest ? REDACTED_PROVIDER_ERROR : String(err);
+    const errorStr = email.sensitive ? REDACTED_PROVIDER_ERROR : attachmentPrimaryFailed ? ATTACHMENT_ACCEPTANCE_UNKNOWN : attachmentRequest ? REDACTED_PROVIDER_ERROR : String(err);
     const logId = record(usedProvider, status, errorStr);
     writeLog("error", "email.send.failed", { error: errorStr, logId });
     return { ok: false, provider: usedProvider, status, error: errorStr, logId };
@@ -251,6 +256,9 @@ export async function resendMailLog(id: string): Promise<EmailResult> {
   }
   if (entry.subject === DISABLED_LOG_SUBJECT && !entry.payload) {
     throw new Error("Disabled emails cannot be resent from the mail log because their content is not retained");
+  }
+  if (entry.subject === SENSITIVE_LOG_SUBJECT && !entry.payload) {
+    throw new Error("Sensitive emails cannot be resent because their content is not retained");
   }
   return sendEmail({
     to: entry.recipient,

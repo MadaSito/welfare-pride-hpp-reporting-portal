@@ -69,6 +69,21 @@ export function runMigrations(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS magic_links (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      browser_hash TEXT NOT NULL,
+      session_version INTEGER NOT NULL,
+      tenant_id TEXT,
+      email TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS magic_link_limits (
+      key TEXT PRIMARY KEY,
+      count INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS monthly_metrics (
       id TEXT PRIMARY KEY,
       tenant_id TEXT REFERENCES tenants(id) ON DELETE SET NULL,
@@ -207,7 +222,7 @@ export function runMigrations(): void {
     CREATE TABLE IF NOT EXISTS brand_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       company_name TEXT NOT NULL DEFAULT 'Welfare Pride',
-      tagline TEXT NOT NULL DEFAULT 'Health Plan Outreach Reporting Portal',
+      tagline TEXT NOT NULL DEFAULT 'Outreach Reporting Dashboard Portal',
       logo_url TEXT DEFAULT '/assets/branding/welfare-pride-main-logo.webp',
       logo_dark_url TEXT,
       icon_url TEXT DEFAULT '/assets/branding/welfare-pride-icon.png',

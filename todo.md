@@ -2,6 +2,11 @@
 
 The application is not approved for production. See [the security assessment](application-context/production-security-assessment.md) for details and the preview incident.
 
+- [x] Show “Outreach Reporting Dashboard Portal” in a slightly larger font beneath the Welfare Pride logo on the login page, preserving other custom branding.
+- [x] Add a prominently colored emailed magic-link alternative for eligible MFA-enabled local users; keep password login and require MFA after the emailed link.
+- [x] Show a prominent Welfare Pride SSO button and clearly mark it unavailable until the existing Entra SSO integration is implemented and configured.
+- [ ] Configure and validate real email delivery in an approved environment; independently review proxy trust, password-login enumeration, link-abuse controls and overall production readiness.
+
 - [x] Dashboard call-round card labels read “Calls Completed - 1st Round”, “Calls Completed - 2nd Round”, and “Calls Completed - 3rd Round”.
 
 - [x] Redesign report previews using the Welfare Pride logo, color palette and Roboto typography, with responsive presentation and period-correct metrics.

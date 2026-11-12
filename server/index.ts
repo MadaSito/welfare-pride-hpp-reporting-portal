@@ -3,7 +3,7 @@ import helmet from "helmet";
 import multer from "multer";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { TOTP, Secret } from "otpauth";
 import { decodeJwt, SignJWT } from "jose";
@@ -92,6 +92,8 @@ import { requestLogging, writeLog } from "./logging";
 import { edgeInfoMiddleware, ipFirewallMiddleware, createLimiters } from "./cloudflare";
 import { dispatchToSiem, flushSiemBuffer, testSiem } from "./siem";
 import { sendEmail, resendMailLog, emailCircuitStatus } from "./email";
+import { magicLinkRouter, scheduleMagicLinkAudit } from "./magic-link";
+import { attemptMfa, migrateMfaLimiter } from "./mfa-limiter";
 import { canAccessReport, canReceiveReport, eligibleRecipients, executiveReport, renderExecutivePdf } from "./executive-report";
 import {
   exportJsonConfig,
@@ -105,6 +107,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const upload = multer({ limits: { fileSize: 100 * 1024 * 1024 } });
 function param(v: unknown): string { return Array.isArray(v) ? String(v[0] ?? "") : String(v ?? ""); }
  // 100 MB for backup archives / uploads
+
+// repository initializes its database and runs migrations before this module.
+// Apply this additive migration for both existing installations and test apps.
+migrateMfaLimiter(db);
 
 const app = express();
 app.set("trust proxy", true); // parse CF-Connecting-IP / X-Forwarded-For
@@ -146,15 +152,47 @@ app.use(["/api/v1/auth", "/api/v1/admin/invitations", "/api/v1/reports", "/api/v
   res.setHeader("Cache-Control", "no-store");
   next();
 });
+app.use("/magic-link", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Robots-Tag", "noindex, nofollow");
+  next();
+});
 app.use("/api/v1/admin/users", (req, res, next) => {
   if (req.method === "POST" && req.path === "/") res.setHeader("Cache-Control", "no-store");
   next();
 });
 app.use(express.json({ limit: "5mb" }));
+// Body-parser errors can include snippets of malformed input. Credential-bearing
+// JSON must never reach Express's default error logger.
+app.use(((err, req, res, next) => {
+  if (req.path === "/api/v1/auth/magic-link/consume" || req.path === "/api/v1/auth/magic-link/request" || req.path === "/api/v1/auth/mfa/verify") {
+    const status = (err as { status?: number })?.status === 413 ? 413 : 400;
+    if (req.method === "POST" && req.path !== "/api/v1/auth/mfa/verify") scheduleMagicLinkAudit(req, req.path.endsWith("/consume") ? "auth.magic_link.consume_failed" : "auth.magic_link.requested", status);
+    return res.status(status).json({ error: "INVALID_REQUEST" });
+  }
+  return next(err);
+}) as express.ErrorRequestHandler);
 app.use(edgeInfoMiddleware);
+// Do not allow a credential or email supplied as a request ID into access logs.
+app.use((req, _res, next) => {
+  if (req.path === "/api/v1/auth/magic-link/consume" || req.path === "/api/v1/auth/magic-link/request" || req.path === "/api/v1/auth/mfa/verify") req.headers["x-request-id"] = randomUUID();
+  next();
+});
 app.use(requestLogging);
-app.use(ipFirewallMiddleware);
-app.use(limiters.standard);
+function auditMagicLinkPreRouterRejection(req: AuthenticatedRequest, statusCode: number) {
+  if (req.method === "POST" && (req.path === "/api/v1/auth/magic-link/request" || req.path === "/api/v1/auth/magic-link/consume")) {
+    scheduleMagicLinkAudit(req, req.path.endsWith("/consume") ? "auth.magic_link.consume_failed" : "auth.magic_link.requested", statusCode);
+  }
+}
+app.use((req: AuthenticatedRequest, res, next) => {
+  let forwarded = false;
+  ipFirewallMiddleware(req, res, () => { forwarded = true; next(); });
+  if (!forwarded) auditMagicLinkPreRouterRejection(req, res.statusCode);
+});
+// Magic-link routes have independent persistent socket-IP/account/global limits;
+// the standard limiter trusts forwarding headers and exposes different responses.
+app.use((req, res, next) => req.method === "POST" && ["/api/v1/auth/magic-link/request", "/api/v1/auth/magic-link/consume"].includes(req.path) ? next() : limiters.standard(req, res, next));
 app.use(["/api/v1/reports", "/api/v1/admin/reports"], reportLimiter);
 app.use(sessionMiddleware);
 // JWTs are not authoritative: consult live account state for every request.
@@ -180,7 +218,11 @@ app.use((req: AuthenticatedRequest, _res, next) => {
   }
   next();
 });
-app.use(verifyCsrf);
+app.use((req: AuthenticatedRequest, res, next) => {
+  let forwarded = false;
+  verifyCsrf(req, res, () => { forwarded = true; next(); });
+  if (!forwarded) auditMagicLinkPreRouterRejection(req, res.statusCode);
+});
 
 // ---------------------------------------------------------------------
 // Helpers
@@ -218,15 +260,18 @@ async function audit(
   extra?: { severity?: "info" | "warning" | "critical"; beforeState?: object | null; afterState?: object | null },
 ): Promise<string> {
   const info = actorInfo(req);
+  // Untrusted headers can contain credentials: do not persist them for MFA.
+  const isMfaVerification = req.path === "/api/v1/auth/mfa/verify";
   return recordAudit({
     requestId: req.requestId ?? "unknown",
     ...info,
+    ...(isMfaVerification ? { realIp: null, geoCountry: null } : {}),
     action,
     severity: extra?.severity ?? (statusCode >= 500 ? "critical" : statusCode >= 400 ? "warning" : "info"),
     resourceType,
     resourceId: resourceId ?? null,
     ipHash: req.ipHash || "unknown",
-    userAgent: req.header("user-agent") ?? null,
+    userAgent: isMfaVerification ? null : req.header("user-agent") ?? null,
     method: req.method,
     statusCode,
     beforeState: extra?.beforeState,
@@ -263,6 +308,7 @@ app.get("/api/v1/branding", (_req, res) => {
 // ---------------------------------------------------------------------
 // Authentication
 // ---------------------------------------------------------------------
+app.use("/api/v1/auth/magic-link", magicLinkRouter(issueSession));
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
@@ -339,49 +385,79 @@ app.post("/api/v1/auth/mfa/enroll", async (req: AuthenticatedRequest, res) => {
   res.json({ uri: totp.toString(), manualSecret: secret.base32 });
 });
 
-app.post("/api/v1/auth/mfa/verify", limiters.authStrict, async (req: AuthenticatedRequest, res) => {
+app.post("/api/v1/auth/mfa/verify", async (req: AuthenticatedRequest, res) => {
   const session = req.session;
   if (!session || !["mfa_verify", "mfa_enroll"].includes(session.stage)) {
     return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   }
-  const code = String(req.body?.code ?? "").trim();
-  const recoveryCode = String(req.body?.recoveryCode ?? "").trim();
   const user = findUserById(session.sub);
   if (!user || !user.mfa_secret_encrypted) return res.status(400).json({ error: "MFA_NOT_CONFIGURED" });
   if ((session.stage === "mfa_enroll" && user.mfa_enrolled_at) || (session.stage === "mfa_verify" && !user.mfa_enrolled_at)) return res.status(409).json({ error: "MFA_STAGE_INVALID" });
 
-  let ok = false;
-  let usedRecovery = false;
-  try {
-    const base32 = decryptSecret(user.mfa_secret_encrypted);
-    const totp = new TOTP({ secret: Secret.fromBase32(base32), digits: 6, period: 30 });
-    ok = !recoveryCode && totp.validate({ token: code, window: 1 }) !== null;
-  } catch {
-    ok = false;
-  }
+  const result = attemptMfa<{ recoveryCodes: string[] | undefined; usedRecovery: boolean; verifiedUser: DbUser }>(db, session.sub, () => {
+    // Recheck live state after obtaining the SQLite write lock. No await or
+    // credential access occurs until the account bucket admits the request.
+    const current = findUserById(session.sub);
+    if (!current || current.auth_provider !== "local" || !["active", "invited"].includes(current.status) ||
+        current.session_version !== session.sessionVersion || current.role !== session.role || current.tenant_id !== session.tenantId) {
+      return { status: "invalid", error: "AUTHENTICATION_REQUIRED" };
+    }
+    if (!current.mfa_secret_encrypted) return { status: "invalid", error: "MFA_NOT_CONFIGURED" };
+    if ((session.stage === "mfa_enroll" && current.mfa_enrolled_at) || (session.stage === "mfa_verify" && !current.mfa_enrolled_at)) {
+      return { status: "invalid", error: "MFA_STAGE_INVALID" };
+    }
+    const code = String(req.body?.code ?? "").trim();
+    const recoveryCode = String(req.body?.recoveryCode ?? "").trim();
+    let ok = false;
+    let usedRecovery = false;
+    try {
+      const base32 = decryptSecret(current.mfa_secret_encrypted);
+      const totp = new TOTP({ secret: Secret.fromBase32(base32), digits: 6, period: 30 });
+      ok = !recoveryCode && totp.validate({ token: code, window: 1 }) !== null;
+    } catch {
+      ok = false;
+    }
+    if (!ok && recoveryCode) {
+      ok = consumeMfaRecoveryCode(current.id, hashRecoveryCode(recoveryCode));
+      usedRecovery = ok;
+    }
+    if (!ok) return { status: "failure" };
 
-  if (!ok && recoveryCode) {
-    ok = consumeMfaRecoveryCode(user.id, hashRecoveryCode(recoveryCode));
-    usedRecovery = ok;
-  }
+    let recoveryCodes: string[] | undefined;
+    if (session.stage === "mfa_enroll") {
+      recoveryCodes = generateRecoveryCodes(8);
+      setMfaRecoveryCodes(current.id, JSON.stringify(recoveryCodes.map(hashRecoveryCode)));
+    }
+    const verifiedUser = findUserById(current.id);
+    if (!verifiedUser) return { status: "invalid", error: "AUTHENTICATION_REQUIRED" };
+    return { status: "success", value: { recoveryCodes, usedRecovery, verifiedUser } };
+  });
 
-  if (!ok) {
-    await audit(req, "auth.mfa.failed", 401, "user", user.id);
+  if (result.status === "invalid") {
+    const status = result.error === "AUTHENTICATION_REQUIRED" ? 401 : result.error === "MFA_NOT_CONFIGURED" ? 400 : 409;
+    return res.status(status).json({ error: result.error });
+  }
+  if (result.status === "failure" || result.status === "blocked") {
+    await audit(req, result.status === "blocked" ? "auth.mfa.blocked" : "auth.mfa.failed", 401, "user", user.id);
     return res.status(401).json({ error: "INVALID_MFA_CODE" });
   }
 
-  let recoveryCodes: string[] | undefined;
-  if (session.stage === "mfa_enroll") {
-    // Issue recovery codes on first enrollment
-    const codes = generateRecoveryCodes(8);
-    setMfaRecoveryCodes(user.id, JSON.stringify(codes.map(hashRecoveryCode)));
-    recoveryCodes = codes;
-  }
-
-  const updated = findUserById(user.id)!;
+  const { recoveryCodes, usedRecovery, verifiedUser } = result.value;
+  const matchesVerifiedState = (candidate: DbUser | null): candidate is DbUser => !!candidate &&
+    candidate.status === "active" && candidate.auth_provider === "local" &&
+    candidate.session_version === verifiedUser.session_version && candidate.role === verifiedUser.role &&
+    candidate.tenant_id === verifiedUser.tenant_id && candidate.email === verifiedUser.email &&
+    candidate.must_change_password === verifiedUser.must_change_password &&
+    candidate.mfa_secret_encrypted === verifiedUser.mfa_secret_encrypted &&
+    candidate.mfa_enrolled_at === verifiedUser.mfa_enrolled_at && !!candidate.mfa_secret_encrypted && !!candidate.mfa_enrolled_at;
+  const updated = findUserById(user.id);
+  if (!matchesVerifiedState(updated)) return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   const stage = updated.must_change_password ? "password_change" : "full";
   const csrf = randomBytes(24).toString("base64url");
   const token = await issueSession(updated, stage, csrf, stage === "full" ? "30m" : "10m");
+  // Signing yields to the event loop: recheck the exact verified account state
+  // before setting a cookie so changed permissions or MFA cannot be inherited.
+  if (!matchesVerifiedState(findUserById(user.id))) return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   attachSession(res, token, req);
   await audit(req, usedRecovery ? "auth.mfa.recovery_used" : "auth.mfa.succeeded", 200, "user", user.id);
   res.json({ ok: true, stage, userId: user.id, user: stage === "full" ? sanitizeUser(findUserById(user.id)!) : undefined, recoveryCodes, csrf });

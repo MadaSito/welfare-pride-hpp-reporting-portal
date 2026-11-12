@@ -17,6 +17,14 @@ The application no longer creates public demo accounts or a fixed default admini
 
 This setup has been tested in a temporary local environment, not on the requested Hostinger plan. Confirm that the deployment provides terminal access, the project dependencies and a persistent data directory. It does not make the portal production-ready.
 
+## Email sign-in links
+
+Active local users who have already enrolled in MFA and completed any required initial password change may request a sign-in link instead of entering a password. Open the link within 10 minutes in the **same browser** that requested it, choose **Continue to MFA**, and complete the authenticator or recovery-code challenge. Links are single-use; the email alone does not provide portal access. Password sign-in remains available for first-time setup and account recovery. Cross-device links are not supported.
+
+For delivery, an administrator must enable and configure a real SMTP or Microsoft Graph provider in **Email Engine**, set a canonical HTTPS `APP_ORIGIN` and a strong session secret, and ensure no global BCC is configured. SMTP requires TLS. Simulation sends no message. The application does not retain the link in mail logs, and Graph sent-item saving is disabled for these emails, but mail providers and recipient mailboxes may retain or forward messages. Disable provider click tracking or rewriting for sign-in emails. Do not use real credentials or sensitive data in the current preview.
+
+Request responses are intentionally generic and do not confirm whether an address exists or a message was delivered. An unexpired link is preserved rather than replaced; a further request may not send another message until the existing link expires or is used. Reverse proxies need an appropriately configured, authenticated client-IP edge limiter; the application uses the socket address for its link limiter, so users behind a common proxy can share limits. Account-targeted request denial and provider-side mail abuse are not fully eliminated. The visually prominent SSO button remains unavailable: Entra SSO is not implemented or configured.
+
 ## Executive reports
 
 Open a report in **Report Center** to preview the selected period and download a branded PDF. Published reports can be emailed by an administrator or manager to an active portal user who is authorized to access that report. View-only users can open and download reports published to them. Values are generated from the current metric entries, not an immutable historical snapshot; summed monthly staff entries are not a unique headcount.
