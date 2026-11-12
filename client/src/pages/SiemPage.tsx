@@ -164,7 +164,7 @@ export function SiemPage() {
               <input type="url" value={cfg.webhook_url} onChange={e => setCfg(c => ({ ...c, webhook_url: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background font-semibold focus-ring" placeholder="https://siem.intranet.org/receiver" />
             </label>
             <label className="font-semibold">
-              Bearer token (stored encrypted; optional)
+              Bearer token (currently stored unencrypted; optional)
               <input type="password" value={cfg.bearer_token} onChange={e => setCfg(c => ({ ...c, bearer_token: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring" placeholder="eyJhbGciOi..." />
             </label>
             <label className="font-semibold">

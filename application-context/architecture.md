@@ -1,3 +1,5 @@
+> **Historical description:** The actual runtime uses SQLite. Security, storage and identity claims here may be inaccurate; use [production-security-assessment.md](production-security-assessment.md) for the current status.
+
 # Application Context: Architecture and Decisions
 
 ## Purpose

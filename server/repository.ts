@@ -3,10 +3,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { canManageTarget, canonicalRole, hashPassword, type Role } from "./security";
+import { canManageTarget, canonicalRole, verifyPassword, COMPROMISED_LEGACY_PASSWORDS, type Role } from "./security";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.resolve(__dirname, "..", "data");
+if (process.env.DATA_DIR && !path.isAbsolute(process.env.DATA_DIR)) throw new Error("DATA_DIR must be an absolute path.");
+if (process.env.SQLITE_PATH && !path.isAbsolute(process.env.SQLITE_PATH)) throw new Error("SQLITE_PATH must be an absolute path.");
 mkdirSync(dataDir, { recursive: true });
 const dbPath = process.env.SQLITE_PATH || path.join(dataDir, "portal.db");
 
@@ -30,6 +32,8 @@ export function runMigrations(): void {
       role TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       password_hash TEXT,
+      must_change_password INTEGER NOT NULL DEFAULT 0,
+      session_version INTEGER NOT NULL DEFAULT 0,
       auth_provider TEXT NOT NULL DEFAULT 'local',
       sso_id TEXT,
       mfa_required INTEGER NOT NULL DEFAULT 1,
@@ -243,7 +247,18 @@ export function runMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_metrics_period ON monthly_metrics(reporting_year DESC, reporting_month DESC);
     CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
   `);
-  // Seed singletons
+  // Additive migration; preserve users, tenant data, and existing password hashes.
+  const columns = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  db.transaction(() => {
+    if (!columns.some(c => c.name === "must_change_password")) db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0");
+    if (!columns.some(c => c.name === "session_version")) {
+      db.exec("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0");
+      // Revoke all legacy tokens, which do not prove the current MFA/reset state.
+      db.exec("UPDATE users SET session_version = 1");
+    }
+    db.exec("CREATE TABLE IF NOT EXISTS security_migrations (name TEXT PRIMARY KEY)");
+  })();
+  // Seed configuration singletons only; never seed accounts or sample records.
   db.exec(`
     INSERT OR IGNORE INTO email_config (id) VALUES (1);
     INSERT OR IGNORE INTO siem_config (id) VALUES (1);
@@ -263,6 +278,8 @@ export type DbUser = {
   role: Role;
   status: "invited" | "active" | "disabled" | "locked";
   password_hash: string | null;
+  must_change_password: number;
+  session_version: number;
   auth_provider: "local" | "sso";
   sso_id: string | null;
   mfa_required: number;
@@ -312,11 +329,12 @@ export function createUser(input: {
   mfaRequired?: boolean;
   status?: DbUser["status"];
   createdBy?: string | null;
+  mustChangePassword?: boolean;
 }): string {
   const id = randomUUID();
   db.prepare(`
-    INSERT INTO users (id, tenant_id, email, display_name, role, password_hash, auth_provider, mfa_required, status, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO users (id, tenant_id, email, display_name, role, password_hash, auth_provider, mfa_required, status, created_by, must_change_password)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.tenantId,
@@ -328,6 +346,7 @@ export function createUser(input: {
     input.mfaRequired ?? true ? 1 : 0,
     input.status ?? "invited",
     input.createdBy ?? null,
+    input.mustChangePassword ? 1 : 0,
   );
   return id;
 }
@@ -343,28 +362,51 @@ export function updateUser(id: string, fields: Partial<{
 }>): void {
   const sets: string[] = [];
   const vals: unknown[] = [];
+  const securityChanges: string[] = [];
+  const securityValues: unknown[] = [];
+  const securityField = (column: string, value: unknown) => {
+    securityChanges.push(`${column} IS NOT ?`);
+    securityValues.push(value);
+  };
   if (fields.displayName !== undefined) { sets.push("display_name = ?"); vals.push(fields.displayName); }
-  if (fields.role !== undefined) { sets.push("role = ?"); vals.push(fields.role); }
-  if (fields.status !== undefined) { sets.push("status = ?"); vals.push(fields.status); }
-  if (fields.mfaRequired !== undefined) { sets.push("mfa_required = ?"); vals.push(fields.mfaRequired ? 1 : 0); }
-  if (fields.authProvider !== undefined) { sets.push("auth_provider = ?"); vals.push(fields.authProvider); }
-  if (fields.ssoId !== undefined) { sets.push("sso_id = ?"); vals.push(fields.ssoId); }
-  if (fields.tenantId !== undefined) { sets.push("tenant_id = ?"); vals.push(fields.tenantId); }
+  if (fields.role !== undefined) { sets.push("role = ?"); vals.push(fields.role); securityField("role", fields.role); }
+  if (fields.status !== undefined) { sets.push("status = ?"); vals.push(fields.status); securityField("status", fields.status); }
+  if (fields.mfaRequired !== undefined) { const v = fields.mfaRequired ? 1 : 0; sets.push("mfa_required = ?"); vals.push(v); securityField("mfa_required", v); }
+  if (fields.authProvider !== undefined) { sets.push("auth_provider = ?"); vals.push(fields.authProvider); securityField("auth_provider", fields.authProvider); }
+  if (fields.ssoId !== undefined) { sets.push("sso_id = ?"); vals.push(fields.ssoId); securityField("sso_id", fields.ssoId); }
+  if (fields.tenantId !== undefined) { sets.push("tenant_id = ?"); vals.push(fields.tenantId); securityField("tenant_id", fields.tenantId); }
   if (sets.length === 0) return;
+  if (securityChanges.length) {
+    sets.push(`session_version = session_version + CASE WHEN ${securityChanges.join(" OR ")} THEN 1 ELSE 0 END`);
+    vals.push(...securityValues);
+  }
   sets.push("updated_at = datetime('now')");
   vals.push(id);
   db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
 }
 
 export function disableUser(id: string): void {
-  db.prepare(`UPDATE users SET status = 'disabled', updated_at = datetime('now') WHERE id = ?`).run(id);
+  db.prepare(`UPDATE users SET session_version = session_version + CASE WHEN status != 'disabled' THEN 1 ELSE 0 END, status = 'disabled', updated_at = datetime('now') WHERE id = ?`).run(id);
 }
 export function enableUser(id: string): void {
-  db.prepare(`UPDATE users SET status = 'active', locked_until = NULL, failed_sign_in_count = 0, updated_at = datetime('now') WHERE id = ?`).run(id);
+  db.prepare(`UPDATE users SET session_version = session_version + CASE WHEN status != 'active' THEN 1 ELSE 0 END, status = 'active', locked_until = NULL, failed_sign_in_count = 0, updated_at = datetime('now') WHERE id = ?`).run(id);
+}
+
+// Compare-and-swap prevents a request using a stale token from revoking newer sessions.
+export function revokeSessions(id: string, version: number): boolean {
+  return db.prepare(`UPDATE users SET session_version = session_version + 1, updated_at = datetime('now') WHERE id = ? AND session_version = ?`).run(id, version).changes === 1;
 }
 
 export function updatePassword(id: string, hash: string): void {
-  db.prepare(`UPDATE users SET password_hash = ?, status = 'active', locked_until = NULL, failed_sign_in_count = 0, updated_at = datetime('now') WHERE id = ?`).run(hash, id);
+  db.prepare(`UPDATE users SET password_hash = ?, must_change_password = 0, session_version = session_version + 1, status = 'active', locked_until = NULL, failed_sign_in_count = 0, updated_at = datetime('now') WHERE id = ? AND status != 'disabled'`).run(hash, id);
+}
+
+export function changePasswordForSession(id: string, version: number, oldHash: string, newHash: string): boolean {
+  return db.prepare(`UPDATE users SET password_hash = ?, must_change_password = 0, session_version = session_version + 1, locked_until = NULL, failed_sign_in_count = 0, updated_at = datetime('now') WHERE id = ? AND session_version = ? AND password_hash = ? AND status = 'active'`).run(newHash, id, version, oldHash).changes === 1;
+}
+
+export function completeRequiredPasswordChange(id: string, version: number, oldHash: string, newHash: string): boolean {
+  return db.prepare(`UPDATE users SET password_hash = ?, must_change_password = 0, session_version = session_version + 1, status = 'active', updated_at = datetime('now') WHERE id = ? AND session_version = ? AND password_hash = ? AND must_change_password = 1 AND status != 'disabled'`).run(newHash, id, version, oldHash).changes === 1;
 }
 
 export function markSignInFailure(id: string): void {
@@ -372,22 +414,23 @@ export function markSignInFailure(id: string): void {
     UPDATE users SET
       failed_sign_in_count = failed_sign_in_count + 1,
       locked_until = CASE WHEN failed_sign_in_count + 1 >= 5 THEN datetime('now', '+15 minutes') ELSE locked_until END,
+      session_version = session_version + CASE WHEN failed_sign_in_count + 1 >= 5 AND status != 'locked' THEN 1 ELSE 0 END,
       status = CASE WHEN failed_sign_in_count + 1 >= 5 THEN 'locked' ELSE status END,
       updated_at = datetime('now')
-    WHERE id = ?
+    WHERE id = ? AND status != 'disabled'
   `).run(id);
 }
 
 export function markSignInSuccess(id: string): void {
-  db.prepare(`UPDATE users SET failed_sign_in_count = 0, locked_until = NULL, status = CASE WHEN status = 'locked' THEN 'active' ELSE status END, last_signed_in_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(id);
+  db.prepare(`UPDATE users SET failed_sign_in_count = 0, locked_until = NULL, session_version = session_version + CASE WHEN status = 'locked' THEN 1 ELSE 0 END, status = CASE WHEN status = 'locked' THEN 'active' ELSE status END, last_signed_in_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND status != 'disabled'`).run(id);
 }
 
 export function setMfaSecret(id: string, encryptedSecret: string): void {
-  db.prepare(`UPDATE users SET mfa_secret_encrypted = ?, mfa_enrolled_at = datetime('now'), status = 'active', updated_at = datetime('now') WHERE id = ?`).run(encryptedSecret, id);
+  db.prepare(`UPDATE users SET mfa_secret_encrypted = ?, mfa_enrolled_at = NULL, updated_at = datetime('now') WHERE id = ? AND mfa_enrolled_at IS NULL`).run(encryptedSecret, id);
 }
 
 export function setMfaRecoveryCodes(id: string, hashedCodesJson: string): void {
-  db.prepare(`UPDATE users SET mfa_recovery_codes = ?, updated_at = datetime('now') WHERE id = ?`).run(hashedCodesJson, id);
+  db.prepare(`UPDATE users SET mfa_recovery_codes = ?, mfa_enrolled_at = datetime('now'), session_version = session_version + CASE WHEN status != 'active' THEN 1 ELSE 0 END, status = 'active', updated_at = datetime('now') WHERE id = ? AND status IN ('active', 'invited')`).run(hashedCodesJson, id);
 }
 
 export function consumeMfaRecoveryCode(id: string, codeHash: string): boolean {
@@ -406,7 +449,7 @@ export function consumeMfaRecoveryCode(id: string, codeHash: string): boolean {
 }
 
 export function resetUserMfa(id: string): void {
-  db.prepare(`UPDATE users SET mfa_secret_encrypted = NULL, mfa_enrolled_at = NULL, mfa_recovery_codes = NULL, updated_at = datetime('now') WHERE id = ?`).run(id);
+  db.prepare(`UPDATE users SET mfa_secret_encrypted = NULL, mfa_enrolled_at = NULL, mfa_recovery_codes = NULL, session_version = session_version + 1, updated_at = datetime('now') WHERE id = ?`).run(id);
 }
 
 // ---------------------------------------------------------------------
@@ -990,100 +1033,31 @@ export function deleteBackupRecord(id: string): void {
 }
 
 // ---------------------------------------------------------------------
-// Bootstrap seed (runs once when users table is empty)
-// ---------------------------------------------------------------------
-export async function bootstrapSeed(): Promise<{ adminEmail: string; adminPassword?: string }> {
-  const count = (db.prepare(`SELECT COUNT(*) AS c FROM users`).get() as { c: number }).c;
-  if (count > 0) return { adminEmail: "" };
-
-  const defaultTenantId = ensureDefaultTenant("Welfare Pride");
-
-  // Four demo accounts — one per RBAC tier.
-  // In preview/eval environments EVAL_MFA=optional makes sign-in one-step;
-  // in production (unset), accounts get mfa_required=true with guided first-time enrollment.
-  const mfaForAdmin = process.env.EVAL_MFA === "optional" || process.env.PREVIEW_MODE === "true" ? false : true;
-  const superHash = await hashPassword(process.env.BOOTSTRAP_SUPERADMIN_PASSWORD || "SuperAdmin2026!#W");
-  createUser({ tenantId: defaultTenantId, email: process.env.BOOTSTRAP_SUPERADMIN_EMAIL || "superadmin@welfarepride.org", displayName: "Morgan Chase (Super Admin)", role: "super_admin", passwordHash: superHash, status: "active", mfaRequired: mfaForAdmin });
-  const adminHash = await hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD || "AdminPass2026!#W");
-  createUser({ tenantId: defaultTenantId, email: process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@welfarepride.org", displayName: "Taylor Brooks (Admin)", role: "admin", passwordHash: adminHash, status: "active", mfaRequired: mfaForAdmin });
-  const mgrHash = await hashPassword(process.env.BOOTSTRAP_MANAGER_PASSWORD || "ManagerPass2026!#W");
-  createUser({ tenantId: defaultTenantId, email: "manager@welfarepride.org", displayName: "Jordan Lee (Outreach Manager)", role: "manager", passwordHash: mgrHash, status: "active", mfaRequired: mfaForAdmin });
-  const viewHash = await hashPassword("ViewerPass2026!#W");
-  createUser({ tenantId: defaultTenantId, email: "viewer@welfarepride.org", displayName: "Alex Rivera (View Only)", role: "view_only", passwordHash: viewHash, status: "active", mfaRequired: false });
-  // 12 months of realistic 2026 HPP sample metric data
-  const sampleData: [number, number, number, number, number, number, number, number, number][] = [
-    // Jan: round1, round2, round3, acaYes, acaNo, hoh, staff, jhpp, wr
-    [412, 189, 94, 287, 145, 178, 9, 134, 98],
-    // Feb
-    [435, 198, 102, 301, 150, 190, 9, 142, 105],
-    // Mar
-    [480, 220, 115, 332, 162, 210, 10, 160, 118],
-    // Apr
-    [462, 210, 108, 318, 155, 201, 10, 151, 110],
-    // May
-    [510, 235, 122, 355, 170, 225, 11, 172, 126],
-    // Jun
-    [528, 245, 128, 372, 175, 238, 11, 180, 132],
-    // Jul
-    [495, 230, 118, 345, 165, 219, 11, 165, 122],
-    // Aug
-    [540, 252, 134, 388, 178, 246, 12, 190, 140],
-    // Sep
-    [562, 264, 140, 405, 182, 258, 12, 201, 148],
-    // Oct
-    [580, 275, 146, 420, 190, 270, 13, 212, 155],
-    // Nov
-    [550, 260, 138, 396, 180, 252, 13, 198, 145],
-    // Dec
-    [520, 244, 130, 370, 172, 240, 13, 188, 138],
-  ];
-  sampleData.forEach((row, i) => {
-    upsertMonthlyMetric({
-      tenantId: defaultTenantId,
-      reporting_month: i + 1,
-      reporting_year: 2026,
-      calls_round1: row[0],
-      calls_round2: row[1],
-      calls_round3: row[2],
-      aca_yes: row[3],
-      aca_no: row[4],
-      head_of_household: row[5],
-      staff_members: row[6],
-      calls_jhpp: row[7],
-      calls_wr: row[8],
-      notes: "Sample demo dataset — replace with actual outreach data.",
-    });
-  });
-
-  // Sample published reports
-  const r1 = createReport({
-    tenantId: defaultTenantId,
-    title: "2026 Year-to-Date Outreach Executive Summary",
-    description: "Monthly aggregation of call rounds, ACA acceptance, and referral distribution across 2026.",
-    reporting_year: 2026,
-    layout_config: JSON.stringify({ widgets: ["kpi_cards", "calls_by_round", "aca_breakdown", "referrals", "trend", "table"] }),
-  });
-  publishReport(r1.id, "all");
-
-  const r2 = createReport({
-    tenantId: defaultTenantId,
-    title: "Q3 2026 Performance Detail",
-    description: "Focus on July–September round completion rates and staffing productivity.",
-    reporting_year: 2026,
-    layout_config: JSON.stringify({ widgets: ["kpi_cards", "trend", "table"], months: [7, 8, 9] }),
-  });
-  publishReport(r2.id, "view_users");
-
-  const r3 = createReport({
-    tenantId: defaultTenantId,
-    title: "Draft — November 2026 Deep Dive",
-    description: "Work-in-progress report; not yet published.",
-    reporting_year: 2026,
-    reporting_month: 11,
-  });
-  void r3;
-
-  return { adminEmail: process.env.BOOTSTRAP_SUPERADMIN_EMAIL || "superadmin@welfarepride.org", adminPassword: process.env.BOOTSTRAP_SUPERADMIN_PASSWORD || "SuperAdmin2026!#W" };
+// Quarantine accounts still using credentials from the former public demo seed.
+// These values are a deny-list, never credentials assigned to an account. Check only
+// once per database, before accepting requests; no user data or hashes are deleted.
+export async function quarantineLegacyCredentials(): Promise<number> {
+  if (db.prepare("SELECT 1 FROM security_migrations WHERE name = ?").get("legacy-demo-passwords-v1")) return 0;
+  const users = db.prepare("SELECT id, password_hash FROM users WHERE password_hash IS NOT NULL").all() as { id: string; password_hash: string }[];
+  const compromised: string[] = [];
+  for (const user of users) {
+    for (const oldPassword of COMPROMISED_LEGACY_PASSWORDS) {
+      if (await verifyPassword(user.password_hash, oldPassword)) { compromised.push(user.id); break; }
+    }
+  }
+  db.transaction(() => {
+    for (const id of compromised) db.prepare("UPDATE users SET status = 'disabled', session_version = session_version + 1 WHERE id = ?").run(id);
+    db.prepare("INSERT OR IGNORE INTO security_migrations (name) VALUES (?)").run("legacy-demo-passwords-v1");
+  })();
+  return compromised.length;
 }
 
+export function bootstrapFirstAdmin(email: string, passwordHash: string): string {
+  return db.transaction(() => {
+    const { count } = db.prepare("SELECT count(*) AS count FROM users").get() as { count: number };
+    if (count !== 0) throw new Error("Bootstrap refused: the database already contains users.");
+    const tenantId = ensureDefaultTenant();
+    return createUser({ tenantId, email, displayName: "Initial administrator", role: "super_admin", passwordHash, status: "active", mfaRequired: true, mustChangePassword: true });
+  }).immediate();
+}
 runMigrations();

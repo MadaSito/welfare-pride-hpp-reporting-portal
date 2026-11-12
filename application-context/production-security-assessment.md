@@ -1,0 +1,27 @@
+# Production security assessment — 2026-11-12
+
+**Status: not approved for production or sensitive information.** Earlier statements that the portal was production-ready, that all settings and data were encrypted, that SAML/OIDC sign-in was ready, and that backups were always encrypted were incorrect. Unit tests and a successful build are not a security assessment.
+
+## What was verified
+
+- The runtime uses ordinary SQLite. The database, its write-ahead log, backups, and associated operating-system copies are not encrypted by the application as a whole. Separate host-volume encryption has not been verified.
+- Passwords are hashed using Argon2id; TOTP secrets use AES-256-GCM. SMTP credentials, Graph client secrets, SIEM tokens and Entra configuration secrets have been stored as plaintext database values. API masking does not encrypt them.
+- The previous backup interface and API used mismatched field names, so a user-supplied password could be ignored and a plaintext ZIP created. The optional backend encryption was AES-CBC, not authenticated encryption; archive integrity and a safe SQLite restore were not established. Do not assume existing ZIPs are encrypted. Preserve them; inspect only in a controlled environment. New backup creation and live restore must remain disabled until replaced and tested.
+- The existing sign-in code does not implement SAML or OIDC sign-in. The admin screen and its save endpoint also did not match. A SAML integration needs a real service-provider entity ID, ACS and sign-on endpoints, validated IdP signing certificate, issuer/audience/destination/time validation, replay prevention, safe account mapping and end-to-end tests. Do not copy identifiers from another product's screenshot.
+- The previous deployment included known demo passwords, demo autofill, and an MFA-disabling preview flag. The publicly reachable preview was stopped on 2026-11-12. Treat all secrets and any real data entered into that preview as potentially exposed; known demonstration credentials must never be used in production.
+- On 2026-11-10, troubleshooting deleted and recreated the preview database without asking the user. Two nonempty older snapshot files remain in the sandbox, along with the current database. Their contents and recoverability have not been validated. Do not overwrite, delete or restore them without an approved recovery plan.
+- `pnpm audit --prod --audit-level=high` on 2026-11-12 reported 10 advisories: 1 critical, 3 high and 6 moderate, including proxy-addr, Zod, body-parser and Multer. Update dependencies, assess applicability and retest before production.
+- Additional deployment blockers identified in source review include authorization checks on report detail/export and tenant isolation, overly broad trust of proxy headers, plaintext UDP syslog, invitation-token handling, and secure reset-token recovery. Session revocation changes have been added and tested in isolation, but in-flight request races and broader review remain. These require fixes and independent negative-path testing. A preview or successful sign-in alone cannot establish that the application is safe for real users.
+
+## Hostinger implications
+
+Hostinger's documented Node.js deployment creates versioned build directories and replaces managed build/static files on deployment. The app's persistent database must not be placed under the managed build or web root; whether the selected plan provides a suitable persistent, encrypted location with appropriate access controls must be verified with Hostinger. Hostinger's environment-variable settings keep deployment values out of the repository, but a host administrator or compromised running process may still access data or keys. Portal authentication alone does not protect files from someone with hosting-level access.
+
+References: [Hostinger Node.js deployment](https://www.hostinger.com/support/how-to-deploy-a-nodejs-website-in-hostinger/), [Hostinger environment variables](https://www.hostinger.com/support/how-to-add-environment-variables-during-node-js-application-deployment/), [Microsoft Entra SAML setup](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/add-application-portal-setup-sso), and [Microsoft Entra SAML protocol](https://learn.microsoft.com/en-us/entra/identity-platform/single-sign-on-saml-protocol).
+
+## Required before production
+
+1. Resolve remaining authorization, session, invitation/reset-token, proxy-trust, SSO and bootstrap findings with automated negative-path tests and a security review.
+2. Implement and verify encryption for the database, WAL, temporary files and authenticated backups; protect and separately back up encryption keys and perform an isolated restore test. Avoid assertions of zero-knowledge: the server and authorized host administrators may have access to plaintext and keys.
+3. Use HTTPS, a stable exact public origin, protected environment variables, restricted host filesystem permissions, and an independently verified persistent data location. Ensure the selected Hostinger service supports these requirements.
+4. Rotate any credentials previously entered into the preview, review any available audit records, and assess exposure. Preserve the preview data and older snapshots until recovery decisions are made.

@@ -163,6 +163,7 @@ export function exportAuditCsv(limit = 5000): string {
 export function exportJsonConfig(): object {
   const email = { ...getEmailConfig() };
   email.smtp_pass = email.smtp_pass ? "__configured__" : null;
+  email.graph_client_secret = email.graph_client_secret ? "__configured__" : null;
   const entra = { ...getEntraConfig() };
   entra.client_secret = entra.client_secret ? "__configured__" : null;
   const siem = { ...getSiemConfig() };
@@ -186,6 +187,7 @@ export function importJsonConfig(data: any): { applied: string[]; warnings: stri
     const cur = getEmailConfig();
     const c = { ...data.email };
     if (c.smtp_pass === "__configured__") c.smtp_pass = cur.smtp_pass;
+    if (c.graph_client_secret === "__configured__") c.graph_client_secret = cur.graph_client_secret;
     updateEmailConfig(c);
     applied.push("email");
   }

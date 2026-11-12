@@ -125,18 +125,6 @@ export function UsersPage() {
     }
   };
 
-  const convertSso = async (id: string, provider: "sso" | "local") => {
-    const res = await fetch(`/api/v1/admin/users/${id}/convert-sso`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
-      body: JSON.stringify({ provider }),
-    });
-    if (res.ok) {
-      setMessage({ type: "ok", text: provider === "sso" ? "Converted to Entra ID SSO user (local MFA bypassed)." : "Converted to local user (MFA re-enforced)." });
-      fetchUsers();
-    }
-  };
-
   const createInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     setInviteLink(null);
@@ -169,7 +157,7 @@ export function UsersPage() {
             <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#5A92C9]/15 text-[#5A92C9] border border-[#5A92C9]/30">Module 1</span>
           </div>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
-            4-tier RBAC with Super Admin account isolation, enforceable MFA, expiring invitations, and Entra ID SSO conversion.
+            User roles and local MFA. Entra ID SSO is not yet available; invitation links require further security work.
           </p>
         </div>
         <button
@@ -282,15 +270,6 @@ export function UsersPage() {
                   </td>
                   <td className="py-2 px-2">
                     <span className="font-mono uppercase text-[10px]">{u.auth_provider}</span>
-                    {isSuperAdmin && (
-                      <button
-                        onClick={() => convertSso(u.id, u.auth_provider === "sso" ? "local" : "sso")}
-                        className="ml-2 text-[10px] text-[#5A92C9] hover:underline"
-                        title="Toggle Local <-> Entra ID SSO"
-                      >
-                        convert
-                      </button>
-                    )}
                   </td>
                   <td className="py-2 px-2">
                     {u.mfa_enrolled_at ? (

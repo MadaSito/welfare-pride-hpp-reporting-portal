@@ -70,29 +70,26 @@ describe("secret encryption", () => {
 import { isAllowedOrigin } from "./security";
 
 describe("isAllowedOrigin", () => {
-  const req = (host = "3000-xyz.us5.manus.computer", proto = "https") =>
-    ({ get: (h: string) => (h.toLowerCase() === "host" ? host : proto), header: () => {} } as any);
-
-  it("permits same-origin matching host header", () => {
-    expect(isAllowedOrigin(req(), "https://3000-xyz.us5.manus.computer")).toBe(true);
-  });
-  it("permits configured APP_ORIGIN", () => {
-    const prev = process.env.APP_ORIGIN;
-    process.env.APP_ORIGIN = "https://app.welfarepride.org";
+  const req = { get: () => "attacker-controlled" } as any;
+  it("accepts only the exact configured origin, not host headers or wildcard preview domains", () => {
+    const previous = process.env.APP_ORIGIN;
+    process.env.APP_ORIGIN = "https://portal.example.org";
     try {
-      expect(isAllowedOrigin(req(), "https://app.welfarepride.org")).toBe(true);
+      expect(isAllowedOrigin(req, "https://portal.example.org")).toBe(true);
+      expect(isAllowedOrigin(req, "https://evil.us5.manus.computer")).toBe(false);
+      expect(isAllowedOrigin(req, "http://localhost:3000")).toBe(false);
+      expect(isAllowedOrigin(req, "https://portal.example.org.evil.test")).toBe(false);
+      expect(isAllowedOrigin(req, "https://portal.example.org/path")).toBe(false);
+      expect(isAllowedOrigin(req)).toBe(true);
     } finally {
-      process.env.APP_ORIGIN = prev;
+      if (previous === undefined) delete process.env.APP_ORIGIN;
+      else process.env.APP_ORIGIN = previous;
     }
   });
-  it("permits manus preview and localhost domains", () => {
-    expect(isAllowedOrigin(req(), "http://localhost:5173")).toBe(true);
-    expect(isAllowedOrigin(req(), "https://3000-abc-def.us5.manus.computer")).toBe(true);
-  });
-  it("rejects untrusted cross-site origins", () => {
-    expect(isAllowedOrigin(req(), "https://evil.attacker.com")).toBe(false);
-  });
-  it("permits non-browser requests without origin header", () => {
-    expect(isAllowedOrigin(req())).toBe(true);
+  it("fails closed when APP_ORIGIN is not configured", () => {
+    const previous = process.env.APP_ORIGIN;
+    delete process.env.APP_ORIGIN;
+    try { expect(isAllowedOrigin(req, "http://localhost:3000")).toBe(false); }
+    finally { if (previous !== undefined) process.env.APP_ORIGIN = previous; }
   });
 });

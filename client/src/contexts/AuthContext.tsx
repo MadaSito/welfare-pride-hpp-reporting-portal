@@ -18,7 +18,7 @@ export interface User {
 
 interface AuthContextType {
   user: User | null;
-  stage: "full" | "mfa_verify" | "mfa_enroll" | "anonymous";
+  stage: "full" | "mfa_verify" | "mfa_enroll" | "password_change" | "recovery_codes" | "anonymous";
   userId: string | null;
   csrf: string | null;
   loading: boolean;
@@ -26,6 +26,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<{ stage: string; error?: string; retryAfter?: string }>;
   startMfaEnroll: () => Promise<{ uri: string; manualSecret: string }>;
   verifyMfa: (code: string, recoveryCode?: string) => Promise<{ ok: boolean; error?: string; recoveryCodes?: string[] }>;
+  changeInitialPassword: (currentPassword: string, newPassword: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   isSuperAdmin: boolean;
   isAdmin: boolean;
@@ -43,7 +44,7 @@ function csrfHeader(csrf: string | null): Record<string, string> {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [stage, setStage] = useState<"full" | "mfa_verify" | "mfa_enroll" | "anonymous">("anonymous");
+  const [stage, setStage] = useState<"full" | "mfa_verify" | "mfa_enroll" | "password_change" | "recovery_codes" | "anonymous">("anonymous");
   const [userId, setUserId] = useState<string | null>(null);
   const [csrf, setCsrf] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -66,6 +67,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null);
       setStage("anonymous");
       setUserId(null);
+      setCsrf(null);
     } finally {
       setLoading(false);
     }
@@ -88,31 +90,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await refresh();
       return { stage: "full" };
     }
+    setCsrf(data.csrf || null);
+    setUser(null);
     setStage(data.stage);
     setUserId(data.userId);
     return { stage: data.stage };
   }, [refresh]);
 
   const startMfaEnroll = useCallback(async () => {
-    const res = await fetch("/api/v1/auth/mfa/enroll", { method: "POST" });
+    const res = await fetch("/api/v1/auth/mfa/enroll", { method: "POST", headers: csrfHeader(csrf) });
     if (!res.ok) throw new Error("MFA enrollment initialization failed");
     return res.json();
-  }, []);
+  }, [csrf]);
 
   const verifyMfa = useCallback(async (code: string, recoveryCode?: string) => {
     const res = await fetch("/api/v1/auth/mfa/verify", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...csrfHeader(csrf) },
       body: JSON.stringify({ code, recoveryCode }),
     });
     const data = await res.json();
     if (!res.ok) return { ok: false, error: data.error };
-    setUser(data.user);
-    setStage("full");
-    setUserId(data.user?.id || null);
-    await refresh();
+    setCsrf(data.csrf || null);
+    setUser(data.stage === "full" ? data.user : null);
+    setUserId(data.userId || data.user?.id || null);
+    // Keep the one-time recovery codes visible before entering the portal.
+    setStage(data.stage === "full" && data.recoveryCodes ? "recovery_codes" : data.stage);
     return { ok: true, recoveryCodes: data.recoveryCodes };
-  }, [refresh]);
+  }, [csrf]);
+
+  const changeInitialPassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    const res = await fetch("/api/v1/auth/password", {
+      method: "POST", headers: { "Content-Type": "application/json", ...csrfHeader(csrf) },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error };
+    setCsrf(data.csrf || null);
+    setUser(data.user);
+    setUserId(data.user.id);
+    setStage("full");
+    return { ok: true };
+  }, [csrf]);
 
   const logout = useCallback(async () => {
     await fetch("/api/v1/auth/logout", {
@@ -133,9 +152,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const canManageUsers = isSuperAdmin || isAdmin;
 
   const value = useMemo(() => ({
-    user, stage, userId, csrf, loading, refresh, login, startMfaEnroll, verifyMfa, logout,
+    user, stage, userId, csrf, loading, refresh, login, startMfaEnroll, verifyMfa, changeInitialPassword, logout,
     isSuperAdmin, isAdmin, isManager, isViewOnly, canEdit, canManageUsers,
-  }), [user, stage, userId, csrf, loading, refresh, login, startMfaEnroll, verifyMfa, logout, isSuperAdmin, isAdmin, isManager, isViewOnly, canEdit, canManageUsers]);
+  }), [user, stage, userId, csrf, loading, refresh, login, startMfaEnroll, verifyMfa, changeInitialPassword, logout, isSuperAdmin, isAdmin, isManager, isViewOnly, canEdit, canManageUsers]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

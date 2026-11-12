@@ -91,7 +91,7 @@ export function AuditCenterPage() {
             <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#5A92C9]/15 text-[#5A92C9] border border-[#5A92C9]/30">Module 2</span>
           </div>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
-            Append-only, correlation-ID-tracked event log of all system actions with real IP, geo-country, and before/after state diffs.
+            Correlation-ID-tracked event log with IP, geo-country, and available before/after details. Database-level tamper protection is not yet implemented.
           </p>
         </div>
         <div className="flex items-center gap-2">

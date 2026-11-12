@@ -1,43 +1,34 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
-import { KeyRound, Shield, Globe, Lock, CheckCircle, AlertCircle, Trash2, Plus } from "lucide-react";
+import { KeyRound, Shield, Lock, CheckCircle, AlertCircle, Trash2, Plus } from "lucide-react";
 
 export function SecurityPage() {
   const { csrf } = useAuth();
-  const [sso, setSso] = useState<any>({
-    entra_enabled: false,
-    entra_tenant_id: "",
-    entra_client_id: "",
-    entra_client_secret: "",
-    entra_scopes: "openid profile email",
-    idp_metadata_url: "",
+  const [samlDraft, setSamlDraft] = useState({
+    name: "",
+    idpLoginUrl: "",
+    idpIssuer: "",
+    signingCertificate: "",
   });
   const [rules, setRules] = useState<any[]>([]);
+  const [rulesLoaded, setRulesLoaded] = useState(false);
   const [newRule, setNewRule] = useState({ rule_type: "ip" as "ip" | "geo", action: "allow" as "allow" | "deny", value: "", label: "" });
   const [message, setMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
   const load = async () => {
-    const [s, r] = await Promise.all([
-      fetch("/api/v1/admin/sso").then(x => x.json()),
-      fetch("/api/v1/admin/ip-rules").then(x => x.json()),
-    ]);
-    setSso(s);
-    setRules(r.rules || []);
+    try {
+      const response = await fetch("/api/v1/admin/ip-rules");
+      if (!response.ok) throw new Error();
+      const data = await response.json();
+      setRules(data.rules || []);
+      setRulesLoaded(true);
+    } catch {
+      setRulesLoaded(false);
+      setMessage({ type: "err", text: "Unable to load IP and geo rules." });
+    }
   };
 
   useEffect(() => { load(); }, []);
-
-  const saveSso = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setMessage(null);
-    const res = await fetch("/api/v1/admin/sso", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
-      body: JSON.stringify(sso),
-    });
-    const d = await res.json();
-    setMessage({ type: res.ok ? "ok" : "err", text: res.ok ? "Entra ID SSO configuration saved. Users converted to SSO sign in through Microsoft and bypass local MFA." : d.error });
-  };
 
   const addRule = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -71,7 +62,7 @@ export function SecurityPage() {
           <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#5A92C9]/15 text-[#5A92C9] border border-[#5A92C9]/30">Module 1 + Edge</span>
         </div>
         <p className="text-muted-foreground mt-0.5">
-          Microsoft Entra ID SAML 2.0 / OIDC single sign-on with per-user conversion, IP allow/deny rules, geo-blocking, and rate limiting.
+          Security settings, IP allow/deny rules, geo-blocking, and rate limiting. Microsoft Entra ID SSO is in development and is not operational.
         </p>
       </div>
 
@@ -84,39 +75,51 @@ export function SecurityPage() {
 
       {/* SSO */}
       <section className="rounded-2xl bg-card border border-border p-5 panel-shadow space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-bold flex items-center gap-2"><KeyRound size={16} className="text-[#5A92C9]" /> Microsoft Entra ID (Azure AD) SSO</h2>
-          <label className="flex items-center gap-2 font-semibold cursor-pointer">
-            <input type="checkbox" checked={sso.entra_enabled} onChange={e => setSso((s: any) => ({ ...s, entra_enabled: e.target.checked }))} />
-            <span>Enable Entra ID SSO</span>
-          </label>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-bold flex items-center gap-2"><KeyRound size={16} className="text-[#5A92C9]" /> Microsoft Entra ID SAML 2.0</h2>
+          <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">Not operational · Development</span>
         </div>
-        <form onSubmit={saveSso} className="space-y-3">
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 leading-relaxed text-amber-800 dark:text-amber-200">
+          SAML and OIDC sign-in are not implemented. Do not convert users to SSO or configure Entra with these details yet; continue using local sign-in and MFA.
+        </div>
+        <div className="space-y-2">
+          <h3 className="font-bold">Service provider details</h3>
+          <p className="text-muted-foreground">These values will be available only after the SAML service provider is implemented and deployed.</p>
+          <dl className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {["SP entity ID", "ACS URL", "Sign-on URL"].map(label => (
+              <div key={label} className="rounded-xl border border-border bg-muted/30 p-3">
+                <dt className="font-semibold">{label}</dt>
+                <dd className="mt-1 text-muted-foreground">Not available — not implemented</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        <form onSubmit={e => e.preventDefault()} className="space-y-3" autoComplete="off">
+          <div>
+            <h3 className="font-bold">Identity provider details <span className="font-normal text-muted-foreground">(draft only)</span></h3>
+            <p className="mt-1 text-muted-foreground">Entries stay in this page only and are lost on refresh or navigation. They are not saved or sent to the server.</p>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="font-semibold">
-              Tenant ID
-              <input type="text" value={sso.entra_tenant_id} onChange={e => setSso((s: any) => ({ ...s, entra_tenant_id: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background font-mono focus-ring" placeholder="00000000-0000-0000-0000-000000000000" />
+              Configuration name
+              <input type="text" value={samlDraft.name} onChange={e => setSamlDraft(s => ({ ...s, name: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring" placeholder="e.g. Microsoft Entra ID" />
             </label>
             <label className="font-semibold">
-              Client ID
-              <input type="text" value={sso.entra_client_id} onChange={e => setSso((s: any) => ({ ...s, entra_client_id: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background font-mono focus-ring" />
-            </label>
-            <label className="font-semibold">
-              Client secret (stored encrypted)
-              <input type="password" value={sso.entra_client_secret} onChange={e => setSso((s: any) => ({ ...s, entra_client_secret: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring" />
-            </label>
-            <label className="font-semibold">
-              Scopes
-              <input type="text" value={sso.entra_scopes} onChange={e => setSso((s: any) => ({ ...s, entra_scopes: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring" />
+              IdP login URL
+              <input type="url" value={samlDraft.idpLoginUrl} onChange={e => setSamlDraft(s => ({ ...s, idpLoginUrl: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background font-mono focus-ring" placeholder="Enter the Entra ID login URL" />
             </label>
             <label className="font-semibold sm:col-span-2">
-              SAML 2.0 IdP metadata URL (optional)
-              <input type="url" value={sso.idp_metadata_url} onChange={e => setSso((s: any) => ({ ...s, idp_metadata_url: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background font-mono text-[11px] focus-ring" placeholder="https://login.microsoftonline.com/{tenant}/federationmetadata/2007-06/federationmetadata.xml" />
+              IdP issuer
+              <input type="text" value={samlDraft.idpIssuer} onChange={e => setSamlDraft(s => ({ ...s, idpIssuer: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background font-mono focus-ring" placeholder="Enter the Entra ID identifier (issuer)" />
+            </label>
+            <label className="font-semibold sm:col-span-2">
+              IdP X.509 signing certificate (Base64 PEM)
+              <textarea value={samlDraft.signingCertificate} onChange={e => setSamlDraft(s => ({ ...s, signingCertificate: e.target.value }))} rows={5} spellCheck={false} className="mt-1 w-full px-3 py-2 rounded-xl border border-border bg-background font-mono text-[11px] focus-ring" placeholder="Paste the PEM certificate, including BEGIN CERTIFICATE and END CERTIFICATE lines" />
             </label>
           </div>
           <div className="flex justify-end">
-            <button type="submit" className="touch-target px-5 py-2 font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] focus-ring">
-              Save SSO configuration
+            <button type="submit" disabled className="touch-target cursor-not-allowed px-5 py-2 font-bold rounded-xl bg-muted text-muted-foreground opacity-70">
+              Save unavailable
             </button>
           </div>
         </form>
@@ -153,7 +156,9 @@ export function SecurityPage() {
               </tr>
             </thead>
             <tbody>
-              {rules.length === 0 ? (
+              {!rulesLoaded ? (
+                <tr><td colSpan={6} className="py-4 text-center text-muted-foreground">IP and geo rules are unavailable.</td></tr>
+              ) : rules.length === 0 ? (
                 <tr><td colSpan={6} className="py-4 text-center text-muted-foreground">No IP or geo rules defined. All traffic currently flows (subject to rate limits).</td></tr>
               ) : rules.map(r => (
                 <tr key={r.id} className="border-b border-border/60">

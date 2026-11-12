@@ -5,10 +5,12 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { TOTP, Secret } from "otpauth";
+import { decodeJwt, SignJWT } from "jose";
 import { z } from "zod";
 
 import {
   ROLES,
+  COMPROMISED_LEGACY_PASSWORDS,
   canonicalRole,
   type Role,
   type AuthenticatedRequest,
@@ -31,7 +33,7 @@ import {
 } from "./security";
 import {
   runMigrations,
-  bootstrapSeed,
+  quarantineLegacyCredentials,
   findUserByEmail,
   findUserById,
   listUsers,
@@ -39,7 +41,9 @@ import {
   updateUser,
   disableUser,
   enableUser,
-  updatePassword,
+  revokeSessions,
+  changePasswordForSession,
+  completeRequiredPasswordChange,
   markSignInFailure,
   markSignInSuccess,
   setMfaSecret,
@@ -78,6 +82,7 @@ import {
   listIpRules,
   addIpRule,
   deleteIpRule,
+  type DbUser,
 } from "./repository";
 import { recordAudit } from "./audit";
 import { requestLogging, writeLog } from "./logging";
@@ -85,8 +90,6 @@ import { edgeInfoMiddleware, ipFirewallMiddleware, createLimiters } from "./clou
 import { dispatchToSiem, flushSiemBuffer, testSiem } from "./siem";
 import { sendEmail, resendMailLog, emailCircuitStatus } from "./email";
 import {
-  createSnapshotBackup,
-  restoreSnapshot,
   exportMetricsCsv,
   importMetricsCsv,
   exportAuditCsv,
@@ -127,17 +130,61 @@ app.use(
     hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
   }),
 );
+// Set before parsers, rate limiters and CSRF so even rejected auth responses are not cached.
+app.use(["/api/v1/auth", "/api/v1/admin/invitations"], (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
+app.use("/api/v1/admin/users", (req, res, next) => {
+  if (req.method === "POST" && req.path === "/") res.setHeader("Cache-Control", "no-store");
+  next();
+});
 app.use(express.json({ limit: "5mb" }));
 app.use(edgeInfoMiddleware);
 app.use(requestLogging);
 app.use(ipFirewallMiddleware);
 app.use(limiters.standard);
 app.use(sessionMiddleware);
+// JWTs are not authoritative: consult live account state for every request.
+app.use((req: AuthenticatedRequest, _res, next) => {
+  if (req.session) {
+    const user = findUserById(req.session.sub);
+    // sessionMiddleware has verified this exact cookie's signature before we inspect
+    // the additional claims, which its public SessionClaims type does not expose.
+    const cookieName = process.env.SESSION_COOKIE_NAME || "wp_session";
+    const token = req.headers.cookie?.split(";").map(item => item.trim()).find(item => item.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
+    let authProvider: unknown;
+    let status: unknown;
+    let role: unknown;
+    let tenantId: unknown;
+    try { const payload = decodeJwt(token || ""); authProvider = payload.authProvider; status = payload.status; role = payload.role; tenantId = payload.tenantId; } catch { /* reject below */ }
+    if (!user || user.auth_provider !== "local" || authProvider !== user.auth_provider ||
+        status !== user.status || !["active", "invited"].includes(user.status) ||
+        role !== user.role || tenantId !== user.tenant_id || req.session.role !== user.role || req.session.tenantId !== user.tenant_id ||
+        req.session.sessionVersion !== user.session_version ||
+        (req.session.stage === "full" && (user.status !== "active" || user.must_change_password || !user.mfa_enrolled_at || !user.mfa_secret_encrypted))) {
+      req.session = undefined;
+    }
+  }
+  next();
+});
 app.use(verifyCsrf);
 
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
+// Add the account snapshot to the JWT issued by the shared session helper.
+// Old JWTs without these claims are deliberately rejected by the middleware.
+async function issueSession(user: DbUser, stage: "full" | "mfa_verify" | "mfa_enroll" | "password_change", csrf: string, ttl: string): Promise<string> {
+  const base = await createSession({ sub: user.id, role: user.role, tenantId: user.tenant_id, stage,
+    displayName: user.display_name, email: user.email, sessionVersion: user.session_version, csrf }, ttl);
+  const configured = process.env.APP_SESSION_SECRET;
+  // createSession already enforces the production secret policy.
+  const key = new TextEncoder().encode(configured && configured.length >= 32 ? configured : "development-only-session-secret-min32ch!!");
+  return new SignJWT({ ...decodeJwt(base), authProvider: user.auth_provider, status: user.status })
+    .setProtectedHeader({ alg: "HS256" }).sign(key);
+}
+
 function actorInfo(req: AuthenticatedRequest) {
   return {
     actorId: req.session?.sub ?? null,
@@ -177,7 +224,7 @@ async function audit(
 }
 
 function sanitizeUser(u: { password_hash?: unknown; mfa_secret_encrypted?: unknown; mfa_recovery_codes?: unknown; [k: string]: unknown }) {
-  const { password_hash, mfa_secret_encrypted, mfa_recovery_codes, ...rest } = u;
+  const { password_hash, mfa_secret_encrypted, mfa_recovery_codes, session_version, ...rest } = u;
   return rest;
 }
 
@@ -214,7 +261,7 @@ app.post("/api/v1/auth/login", limiters.authStrict, async (req: AuthenticatedReq
   if (!parsed.success) return res.status(400).json({ error: "INVALID_CREDENTIALS_PAYLOAD" });
   const user = findUserByEmail(parsed.data.email);
 
-  if (!user || !user.password_hash) {
+  if (!user || !user.password_hash || user.auth_provider !== "local") {
     await audit(req, "auth.login.failed", 401, "user", null, { reason: "unknown_user" });
     return res.status(401).json({ error: "INVALID_CREDENTIALS" });
   }
@@ -236,49 +283,34 @@ app.post("/api/v1/auth/login", limiters.authStrict, async (req: AuthenticatedReq
     return res.status(401).json({ error: "INVALID_CREDENTIALS" });
   }
 
-  markSignInSuccess(user.id);
-
-  // MFA stage determination
-  if (user.mfa_required) {
-    if (!user.mfa_secret_encrypted) {
-      // Must enroll MFA on first sign-in
-      const pendingSession = await createSession(
-        { sub: user.id, role: user.role, tenantId: user.tenant_id, stage: "mfa_enroll", displayName: user.display_name, email: user.email },
-        "10m",
-      );
-      attachSession(res, pendingSession, req);
-      await audit(req, "auth.mfa.enrollment_required", 200, "user", user.id);
-      return res.json({ stage: "mfa_enroll", userId: user.id });
-    }
-    const pendingSession = await createSession(
-      { sub: user.id, role: user.role, tenantId: user.tenant_id, stage: "mfa_verify", displayName: user.display_name, email: user.email },
-      "10m",
-    );
-    attachSession(res, pendingSession, req);
-    await audit(req, "auth.mfa.challenge_issued", 200, "user", user.id);
-    return res.json({ stage: "mfa_verify", userId: user.id });
+  // Password verification is asynchronous: refuse to authenticate an account
+  // whose security state changed while the password was being checked.
+  const current = findUserById(user.id);
+  if (!current || current.status === "disabled" || current.password_hash !== user.password_hash ||
+      current.session_version !== user.session_version || current.role !== user.role ||
+      current.tenant_id !== user.tenant_id || current.auth_provider !== "local" || current.status !== user.status) {
+    return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   }
+  markSignInSuccess(user.id);
+  const signedIn = findUserById(user.id)!;
 
-  const fullSession = await createSession({
-    sub: user.id,
-    role: user.role,
-    tenantId: user.tenant_id,
-    stage: "full",
-    displayName: user.display_name,
-    email: user.email,
-  });
-  attachSession(res, fullSession, req);
-  await audit(req, "auth.login.succeeded", 200, "user", user.id);
-  res.json({ stage: "full", user: sanitizeUser(user) });
+  // Local sign-in always requires MFA, including migrated accounts formerly marked optional.
+  const stage = signedIn.mfa_enrolled_at && signedIn.mfa_secret_encrypted ? "mfa_verify" : "mfa_enroll";
+  const csrf = randomBytes(24).toString("base64url");
+  const pendingSession = await issueSession(signedIn, stage, csrf, "10m");
+  attachSession(res, pendingSession, req);
+  await audit(req, stage === "mfa_enroll" ? "auth.mfa.enrollment_required" : "auth.mfa.challenge_issued", 200, "user", user.id);
+  return res.json({ stage, userId: user.id, csrf });
 });
 
 app.post("/api/v1/auth/mfa/enroll", async (req: AuthenticatedRequest, res) => {
   const session = req.session;
-  if (!session || (session.stage !== "mfa_enroll" && session.stage !== "full")) {
+  if (!session || session.stage !== "mfa_enroll") {
     return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   }
   const user = findUserById(session.sub);
   if (!user) return res.status(404).json({ error: "USER_NOT_FOUND" });
+  if (user.mfa_enrolled_at) return res.status(409).json({ error: "MFA_ALREADY_ENROLLED" });
 
   const secret = new Secret({ size: 20 });
   const totp = new TOTP({
@@ -304,6 +336,7 @@ app.post("/api/v1/auth/mfa/verify", limiters.authStrict, async (req: Authenticat
   const recoveryCode = String(req.body?.recoveryCode ?? "").trim();
   const user = findUserById(session.sub);
   if (!user || !user.mfa_secret_encrypted) return res.status(400).json({ error: "MFA_NOT_CONFIGURED" });
+  if ((session.stage === "mfa_enroll" && user.mfa_enrolled_at) || (session.stage === "mfa_verify" && !user.mfa_enrolled_at)) return res.status(409).json({ error: "MFA_STAGE_INVALID" });
 
   let ok = false;
   let usedRecovery = false;
@@ -333,17 +366,13 @@ app.post("/api/v1/auth/mfa/verify", limiters.authStrict, async (req: Authenticat
     recoveryCodes = codes;
   }
 
-  const fullSession = await createSession({
-    sub: user.id,
-    role: user.role,
-    tenantId: user.tenant_id,
-    stage: "full",
-    displayName: user.display_name,
-    email: user.email,
-  });
-  attachSession(res, fullSession, req);
+  const updated = findUserById(user.id)!;
+  const stage = updated.must_change_password ? "password_change" : "full";
+  const csrf = randomBytes(24).toString("base64url");
+  const token = await issueSession(updated, stage, csrf, stage === "full" ? "30m" : "10m");
+  attachSession(res, token, req);
   await audit(req, usedRecovery ? "auth.mfa.recovery_used" : "auth.mfa.succeeded", 200, "user", user.id);
-  res.json({ ok: true, user: sanitizeUser(findUserById(user.id)!), recoveryCodes });
+  res.json({ ok: true, stage, userId: user.id, user: stage === "full" ? sanitizeUser(findUserById(user.id)!) : undefined, recoveryCodes, csrf });
 });
 
 app.get("/api/v1/auth/session", async (req: AuthenticatedRequest, res) => {
@@ -356,16 +385,20 @@ app.get("/api/v1/auth/session", async (req: AuthenticatedRequest, res) => {
   res.json({ stage: "full", user: sanitizeUser(user), csrf: req.session.csrf });
 });
 
-app.post("/api/v1/auth/logout", requireSession, async (req: AuthenticatedRequest, res) => {
+app.post("/api/v1/auth/logout", async (req: AuthenticatedRequest, res) => {
+  if (!req.session) return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   const actor = actorInfo(req);
+  const session = req.session;
+  const revoked = session.sessionVersion !== undefined && revokeSessions(session.sub, session.sessionVersion);
   clearSession(res, req);
+  if (!revoked) return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   await recordAudit({
     requestId: req.requestId ?? "unknown",
     ...actor,
     action: "auth.logout",
     severity: "info",
     resourceType: "user",
-    resourceId: req.session!.sub,
+    resourceId: session.sub,
     ipHash: req.ipHash || "unknown",
     userAgent: req.header("user-agent") ?? null,
     method: "POST",
@@ -378,60 +411,36 @@ const passwordChangeSchema = z.object({
   currentPassword: z.string().min(1),
   newPassword: z.string().min(14).max(128),
 });
-app.post("/api/v1/auth/password", requireSession, limiters.writeOps, async (req: AuthenticatedRequest, res) => {
+app.post("/api/v1/auth/password", limiters.authStrict, async (req: AuthenticatedRequest, res) => {
+  const session = req.session;
+  if (!session || !["full", "password_change"].includes(session.stage)) return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   const parsed = passwordChangeSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_PAYLOAD" });
   if (!validatePassword(parsed.data.newPassword)) return res.status(400).json({ error: "PASSWORD_POLICY_VIOLATION" });
-  const user = findUserById(req.session!.sub);
+  const user = findUserById(session.sub);
   if (!user || !user.password_hash) return res.status(404).json({ error: "USER_NOT_FOUND" });
   if (!(await verifyPassword(user.password_hash, parsed.data.currentPassword))) {
     await audit(req, "auth.password.change.failed", 401, "user", user.id);
     return res.status(401).json({ error: "INVALID_CREDENTIALS" });
   }
+  if (await verifyPassword(user.password_hash, parsed.data.newPassword)) return res.status(400).json({ error: "PASSWORD_MUST_DIFFER" });
   const hash = await hashPassword(parsed.data.newPassword);
-  updatePassword(user.id, hash);
-  await audit(req, "auth.password.changed", 200, "user", user.id);
-  res.json({ ok: true });
-});
-
-// Forgot-password (self-service reset)
-app.post("/api/v1/auth/forgot", limiters.authStrict, async (req: AuthenticatedRequest, res) => {
-  const email = String(req.body?.email || "").trim();
-  const user = email ? findUserByEmail(email) : null;
-  let devToken: string | undefined;
-  if (user && user.auth_provider === "local") {
-    const token = createPasswordReset(user.id);
-    const origin = process.env.APP_ORIGIN || `http://localhost:${process.env.PORT || 3000}`;
-    const link = `${origin}/#reset=${token}`;
-    // Try to email the reset link; fall back gracefully
-    const emailResult = await sendEmail({
-      to: user.email,
-      subject: "Password reset request — Welfare Pride HPP Reporting Portal",
-      text: `A password reset was requested for your account. Use this link within 60 minutes:\n${link}\nIf you did not request this, you can ignore this email.`,
-      html: `<p>A password reset was requested for your account.</p><p><a href="${link}">Reset your password</a> (valid 60 minutes).</p><p>If you did not request this, you can ignore this email.</p>`,
-      correlationId: req.requestId,
-    });
-    // In dev / when mail fails, return the token for convenience
-    if (!emailResult.ok || process.env.NODE_ENV !== "production") devToken = token;
-    await audit(req, "auth.password_reset.requested", 200, "user", user.id);
+  if (session.sessionVersion === undefined) return res.status(409).json({ error: "SESSION_EXPIRED" });
+  if (session.stage === "password_change") {
+    if (!completeRequiredPasswordChange(user.id, session.sessionVersion, user.password_hash, hash)) return res.status(409).json({ error: "SESSION_EXPIRED" });
   } else {
-    await audit(req, "auth.password_reset.unknown", 200, "user", null, { email });
+    if (!changePasswordForSession(user.id, session.sessionVersion, user.password_hash, hash)) return res.status(409).json({ error: "SESSION_EXPIRED" });
   }
-  res.json({ ok: true, message: "If the account exists, a reset link has been dispatched.", resetToken: devToken });
+  const updated = findUserById(user.id)!;
+  const csrf = randomBytes(24).toString("base64url");
+  const token = await issueSession(updated, "full", csrf, "30m");
+  attachSession(res, token, req);
+  await audit(req, "auth.password.changed", 200, "user", user.id);
+  res.json({ ok: true, stage: "full", user: sanitizeUser(updated), csrf });
 });
 
-app.post("/api/v1/auth/reset", limiters.authStrict, async (req: AuthenticatedRequest, res) => {
-  const token = String(req.body?.token || "");
-  const newPassword = String(req.body?.newPassword || "");
-  const found = findPasswordReset(token);
-  if (!found) return res.status(400).json({ error: "INVALID_OR_EXPIRED_RESET_TOKEN" });
-  if (!validatePassword(newPassword)) return res.status(400).json({ error: "PASSWORD_POLICY_VIOLATION" });
-  const hash = await hashPassword(newPassword);
-  updatePassword(found.user_id, hash);
-  consumePasswordReset(token);
-  await audit(req, "auth.password_reset.completed", 200, "user", found.user_id);
-  res.json({ ok: true });
-});
+// Disabled until reset token delivery, mail log redaction, and account lifecycle are secured.
+app.post(["/api/v1/auth/forgot", "/api/v1/auth/forgot-password", "/api/v1/auth/reset"], (_req, res) => res.status(501).json({ error: "PASSWORD_RESET_UNAVAILABLE" }));
 
 // ---------------------------------------------------------------------
 // User administration (Module 1 — 4-tier RBAC + Super Admin isolation)
@@ -459,6 +468,7 @@ app.post("/api/v1/admin/users", requireSession, requireRole("super_admin", "admi
     await audit(req, "user.creation.denied", 403, "user", null, { requestedRole: parsed.data.role });
     return res.status(403).json({ error: "ROLE_SCOPE_VIOLATION" });
   }
+  if (parsed.data.mfaRequired === false) return res.status(400).json({ error: "MFA_REQUIRED" });
   const tenantId = actorRole === "admin" ? req.session!.tenantId : parsed.data.tenantId ?? req.session!.tenantId ?? null;
   const tempPassword = randomBytes(16).toString("base64url") + "A1!a";
   const passwordHash = await hashPassword(tempPassword);
@@ -471,6 +481,7 @@ app.post("/api/v1/admin/users", requireSession, requireRole("super_admin", "admi
       passwordHash,
       mfaRequired: parsed.data.mfaRequired ?? true,
       status: "invited",
+      mustChangePassword: true,
       createdBy: req.session!.sub,
     });
     await audit(req, "user.created", 201, "user", id, { role: parsed.data.role });
@@ -498,7 +509,13 @@ app.patch("/api/v1/admin/users/:id", requireSession, requireRole("super_admin", 
   if (!canManageTarget(actor, target.role)) return res.status(403).json({ error: "CANNOT_MANAGE_TARGET" });
   const parsed = updateUserSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_PAYLOAD" });
+  if (parsed.data.mfaRequired === false) return res.status(400).json({ error: "MFA_REQUIRED" });
   if (parsed.data.role && !mayAssignRole(actor, parsed.data.role)) return res.status(403).json({ error: "ROLE_SCOPE_VIOLATION" });
+  if (parsed.data.status === "active" && target.status === "disabled" && target.password_hash) {
+    for (const exposed of COMPROMISED_LEGACY_PASSWORDS) {
+      if (await verifyPassword(target.password_hash, exposed)) return res.status(409).json({ error: "COMPROMISED_CREDENTIAL_RESET_REQUIRED" });
+    }
+  }
   if (parsed.data.status === "disabled") disableUser(target.id);
   else if (parsed.data.status === "active") enableUser(target.id);
   updateUser(target.id, { displayName: parsed.data.displayName, role: parsed.data.role, mfaRequired: parsed.data.mfaRequired });
@@ -516,20 +533,8 @@ app.post("/api/v1/admin/users/:id/reset-mfa", requireSession, requireRole("super
 });
 
 // Local <-> Entra ID SSO conversion engine (Module 1)
-app.post("/api/v1/admin/users/:id/convert-sso", requireSession, requireRole("super_admin"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
-  const target = findUserById(param(req.params.id));
-  if (!target) return res.status(404).json({ error: "USER_NOT_FOUND" });
-  const to = req.body?.provider === "sso" ? "sso" : "local";
-  if (to === "sso") {
-    // Convert local user -> SSO user (bypasses local MFA enforcement)
-    updateUser(target.id, { authProvider: "sso" });
-    await audit(req, "user.sso.converted", 200, "user", target.id, { direction: "local->sso" });
-  } else {
-    // Convert SSO user -> local user (re-enforces MFA requirement)
-    updateUser(target.id, { authProvider: "local", mfaRequired: true });
-    await audit(req, "user.sso.converted", 200, "user", target.id, { direction: "sso->local" });
-  }
-  res.json({ ok: true, user: sanitizeUser(findUserById(target.id)!) });
+app.post("/api/v1/admin/users/:id/convert-sso", requireSession, requireRole("super_admin"), (_req, res) => {
+  res.status(501).json({ error: "SSO_NOT_AVAILABLE" });
 });
 
 // Invitations
@@ -933,11 +938,8 @@ app.post("/api/v1/admin/email/test", requireSession, requireRole("super_admin"),
 app.get("/api/v1/admin/backups", requireSession, requireRole("super_admin", "admin"), (_req, res) => {
   res.json({ backups: listBackups() });
 });
-app.post("/api/v1/admin/backups", requireSession, requireRole("super_admin"), async (req: AuthenticatedRequest, res) => {
-  const password = req.body?.encryptPassword ? String(req.body.encryptPassword) : undefined;
-  const result = await createSnapshotBackup({ encryptPassword: password, createdBy: req.session!.sub });
-  await audit(req, "backup.created", 201, "backup", result.filename, { size: result.size, encrypted: result.encrypted });
-  res.status(201).json({ filename: result.filename, size: result.size, encrypted: result.encrypted, checksum: result.checksum });
+app.post("/api/v1/admin/backups", requireSession, requireRole("super_admin"), (_req, res) => {
+  res.status(501).json({ error: "BACKUP_CREATION_UNAVAILABLE" });
 });
 app.get("/api/v1/admin/backups/:filename", requireSession, requireRole("super_admin"), async (req: AuthenticatedRequest, res) => {
   const p = backupFilePath(param(req.params.filename));
@@ -950,11 +952,8 @@ app.delete("/api/v1/admin/backups/:id", requireSession, requireRole("super_admin
   await audit(req, "backup.deleted", 200, "backup", param(req.params.id));
   res.json({ ok: true });
 });
-app.post("/api/v1/admin/backups/restore", requireSession, requireRole("super_admin"), upload.single("snapshot"), async (req: AuthenticatedRequest, res) => {
-  if (!req.file) return res.status(400).json({ error: "SNAPSHOT_FILE_REQUIRED" });
-  const result = await restoreSnapshot(req.file.buffer, { decryptPassword: req.body?.decryptPassword || undefined });
-  await audit(req, "backup.restored", result.ok ? 200 : 500, "backup", null, { ok: result.ok });
-  res.json(result);
+app.post("/api/v1/admin/backups/restore", requireSession, requireRole("super_admin"), (_req, res) => {
+  res.status(501).json({ error: "ONLINE_RESTORE_UNAVAILABLE", message: "Use a verified offline restoration procedure." });
 });
 app.get("/api/v1/admin/config/export", requireSession, requireRole("super_admin"), async (req: AuthenticatedRequest, res) => {
   const cfg = exportJsonConfig();
@@ -1041,19 +1040,15 @@ app.get("/healthz", (_req, res) => {
 // ---------------------------------------------------------------------
 async function start() {
   runMigrations();
-  const seed = await bootstrapSeed();
-  if (seed.adminPassword) {
-    writeLog("warn", "bootstrap.admin_created", {
-      adminEmail: seed.adminEmail,
-      note: "Bootstrap super admin created. Rotate credentials after first login. Password available via BOOTSTRAP_ADMIN_PASSWORD env or the server console below.",
-    });
-    console.log(`\n===============================================================`);
-    console.log(`BOOTSTRAP SUPER ADMIN`);
-    console.log(`Email   : ${seed.adminEmail}`);
-    console.log(`Password: ${seed.adminPassword}`);
-    console.log(`===============================================================\n`);
+  const quarantined = await quarantineLegacyCredentials();
+  if (quarantined) writeLog("warn", "security.legacy_credentials_quarantined", { count: quarantined });
+  if (process.env.NODE_ENV === "production") {
+    const configured = process.env.APP_ORIGIN;
+    try {
+      const parsed = new URL(configured || "");
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.origin !== configured) throw new Error();
+    } catch { throw new Error("APP_ORIGIN must be an exact HTTP(S) origin in production."); }
   }
-
   const root = path.dirname(fileURLToPath(import.meta.url));
   const publicDir = path.resolve(root, "public");
   const brandingDir = path.resolve(root, "..", "branding");
@@ -1063,7 +1058,7 @@ async function start() {
   app.use((_req, res) => res.sendFile(path.join(publicDir, "index.html")));
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, () => {
+  app.listen(port, process.env.BIND_ADDRESS || "0.0.0.0", () => {
     writeLog("info", "server.started", { environment: process.env.NODE_ENV || "development", port });
     console.log(`Server running on http://localhost:${port}`);
   });

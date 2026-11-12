@@ -50,7 +50,7 @@ export function EmailEnginePage() {
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Save failed");
-      setMessage({ type: "ok", text: "Email engine configuration saved. Passwords/secrets stored encrypted." });
+      setMessage({ type: "ok", text: "Configuration saved. Warning: these credentials are currently stored unencrypted in the application database." });
       load();
     } catch (err) {
       setMessage({ type: "err", text: String(err) });
@@ -172,7 +172,7 @@ export function EmailEnginePage() {
               <input type="text" value={cfg.graph_client_id} onChange={e => setCfg((c: any) => ({ ...c, graph_client_id: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring font-mono" />
             </label>
             <label className="font-semibold">
-              Client secret (stored encrypted)
+              Client secret (currently stored unencrypted)
               <input type="password" value={cfg.graph_client_secret} onChange={e => setCfg((c: any) => ({ ...c, graph_client_secret: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring" />
             </label>
             <label className="font-semibold">
@@ -199,7 +199,7 @@ export function EmailEnginePage() {
               <input type="text" value={cfg.smtp_user} onChange={e => setCfg((c: any) => ({ ...c, smtp_user: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring" />
             </label>
             <label className="font-semibold sm:col-span-2">
-              Password (stored encrypted)
+              Password (currently stored unencrypted)
               <input type="password" value={cfg.smtp_pass} onChange={e => setCfg((c: any) => ({ ...c, smtp_pass: e.target.value }))} className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring" />
             </label>
           </div>

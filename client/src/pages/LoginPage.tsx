@@ -1,15 +1,18 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useBranding } from "../contexts/BrandingContext";
-import { Lock, Mail, KeyRound, Shield, AlertCircle, CheckCircle, Copy, Check, Eye, EyeOff, Sparkles, HelpCircle } from "lucide-react";
+import { Mail, KeyRound, Shield, AlertCircle, CheckCircle, Copy, Check, Eye, EyeOff } from "lucide-react";
 import QRCode from "qrcode";
 
 export function LoginPage() {
-  const { stage, login, startMfaEnroll, verifyMfa, isSuperAdmin } = useAuth();
+  const { stage, login, startMfaEnroll, verifyMfa, changeInitialPassword, refresh, logout } = useAuth();
   const { brand } = useBranding();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -26,11 +29,6 @@ export function LoginPage() {
   const [copied, setCopied] = useState(false);
   const [qrError, setQrError] = useState(false);
 
-  // Forgot password
-  const [forgotOpen, setForgotOpen] = useState(false);
-  const [forgotEmail, setForgotEmail] = useState("");
-  const [forgotMsg, setForgotMsg] = useState<string | null>(null);
-
   const companyName = brand?.company_name || "Welfare Pride";
   const iconUrl = brand?.icon_url || "/assets/branding/welfare-pride-icon.png";
 
@@ -40,6 +38,7 @@ export function LoginPage() {
     setError(null);
     const r = await login(email, password);
     setBusy(false);
+    if (!r.error) setPassword("");
     if (r.error) {
       const msg: Record<string, string> = {
         ACCOUNT_LOCKED: "Account temporarily locked after too many failed attempts. Try again in 15 minutes.",
@@ -84,23 +83,17 @@ export function LoginPage() {
     else if (r.recoveryCodes) setEnrollCodesIssued(r.recoveryCodes);
   };
 
-  const onForgotSubmit = async (e: React.FormEvent) => {
+  const onPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setForgotMsg(null);
-    const res = await fetch("/api/v1/auth/forgot-password", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: forgotEmail }),
-    });
-    setForgotMsg("If an account exists for that email, a password-reset link has been sent (local accounts only; SSO accounts reset in Microsoft Entra ID).");
+    setError(null);
+    if (newPassword !== confirmPassword) { setError("New passwords do not match."); return; }
+    setBusy(true);
+    try {
+      const result = await changeInitialPassword(currentPassword, newPassword);
+      if (!result.ok) setError(result.error === "INVALID_CREDENTIALS" ? "Current password is incorrect." : result.error === "PASSWORD_MUST_DIFFER" ? "Choose a different password." : "Use 14–128 characters with upper and lowercase letters, at least two digits, and three symbols.");
+    } catch { setError("Password change failed. Please try again."); }
+    finally { setBusy(false); }
   };
-
-  const demoAccounts = [
-    { label: "Super Admin", e: "superadmin@welfarepride.org", p: "SuperAdmin2026!#W", role: "super_admin" },
-    { label: "Admin", e: "admin@welfarepride.org", p: "AdminPass2026!#W", role: "admin" },
-    { label: "Manager", e: "manager@welfarepride.org", p: "ManagerPass2026!#W", role: "manager" },
-    { label: "View Only", e: "viewer@welfarepride.org", p: "ViewerPass2026!#W", role: "view_only" },
-  ];
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col justify-center py-10 px-4 sm:px-6 brand-grid">
@@ -114,7 +107,21 @@ export function LoginPage() {
 
         {/* Card */}
         <div className="rounded-2xl bg-card border border-border p-6 sm:p-7 panel-shadow space-y-5">
-          {stage === "mfa_enroll" ? (
+          {stage === "password_change" ? (
+            <form onSubmit={onPasswordSubmit} className="space-y-4 text-xs">
+              <h2 className="text-base font-bold">Change your temporary password</h2>
+              <p className="text-muted-foreground">MFA is verified. Choose a new password before accessing the portal: 14–128 characters, upper and lowercase letters, at least two digits and three symbols.</p>
+              {enrollCodesIssued && <div className="rounded-xl border border-border bg-muted/40 p-4 space-y-2"><strong>Save your eight one-time MFA recovery codes now; they cannot be shown again.</strong><div className="grid grid-cols-2 gap-1 font-mono select-all">{enrollCodesIssued.map(c => <span key={c}>{c}</span>)}</div></div>}
+              <label className="block font-semibold">Temporary password<input required type="password" autoComplete="current-password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="mt-1 w-full h-11 px-3 rounded-xl border border-border bg-background" /></label>
+              <label className="block font-semibold">New password<input required type="password" autoComplete="new-password" minLength={14} maxLength={128} value={newPassword} onChange={e => setNewPassword(e.target.value)} className="mt-1 w-full h-11 px-3 rounded-xl border border-border bg-background" /></label>
+              <label className="block font-semibold">Confirm new password<input required type="password" autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="mt-1 w-full h-11 px-3 rounded-xl border border-border bg-background" /></label>
+              {error && <div role="alert" className="text-rose-600">{error}</div>}
+              <button disabled={busy} className="w-full py-2.5 font-bold rounded-xl bg-[#5A92C9] text-white disabled:opacity-50">{busy ? "Changing…" : "Change password and continue"}</button>
+              <button type="button" onClick={() => logout()} className="w-full text-muted-foreground underline">Sign out</button>
+            </form>
+          ) : stage === "recovery_codes" ? (
+            <div className="space-y-4 text-xs"><h2 className="text-base font-bold">Save your MFA recovery codes</h2><p>Store these one-time codes securely. They will not be shown again.</p><div className="grid grid-cols-2 gap-1 font-mono select-all">{enrollCodesIssued?.map(c => <span key={c}>{c}</span>)}</div><button onClick={() => refresh()} className="w-full py-2.5 font-bold rounded-xl bg-[#5A92C9] text-white">Continue</button></div>
+          ) : stage === "mfa_enroll" ? (
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <Shield className="text-[#5A92C9]" size={20} />
@@ -228,7 +235,7 @@ export function LoginPage() {
             <form onSubmit={onCredSubmit} className="space-y-4">
               <div className="space-y-1">
                 <h2 className="text-base font-bold">Sign in</h2>
-                <p className="text-xs text-muted-foreground">Local accounts with MFA; Microsoft Entra ID single sign-on also supported.</p>
+                <p className="text-xs text-muted-foreground">Local accounts require multi-factor authentication.</p>
               </div>
               <label className="font-semibold block text-xs">
                 Email
@@ -263,51 +270,17 @@ export function LoginPage() {
               </label>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-muted-foreground text-[11px]">14-char policy enforced</span>
-                <button type="button" onClick={() => setForgotOpen(true)} className="font-semibold text-[#5A92C9] hover:underline">Forgot password?</button>
+                <span>Contact an administrator for account recovery.</span>
               </div>
               {error && <div className="p-3 rounded-xl bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 text-xs flex items-center gap-2"><AlertCircle size={14} />{error}</div>}
               <button type="submit" disabled={busy} className="touch-target w-full py-2.5 font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] disabled:opacity-50 focus-ring text-xs">
                 {busy ? "Signing in…" : "Sign in"}
               </button>
-              <div className="relative my-1 text-center text-xs text-muted-foreground"><span className="bg-card px-2">or</span></div>
-              <a href="/api/v1/auth/sso/entra" className="touch-target w-full py-2.5 font-bold rounded-xl border border-border bg-card hover:bg-muted text-xs flex items-center justify-center gap-2 text-foreground">
-                <span className="text-[13px] font-black tracking-tight" style={{ color: "#00a4ef" }}>■</span>
-                <span>Sign in with Microsoft Entra ID</span>
-              </a>
             </form>
           )}
         </div>
 
-        {/* Demo accounts */}
-        <div className="rounded-2xl border border-border bg-card p-4 panel-shadow text-xs space-y-2">
-          <div className="font-bold flex items-center gap-1.5"><Sparkles size={14} className="text-[#D58240]" /> Demo accounts (first-time evaluation)</div>
-          <p className="text-[11px] text-muted-foreground">Click any account to prefill credentials for instant evaluation, then click Sign in:</p>
-          <div className="flex flex-wrap gap-1">
-            {demoAccounts.map(a => (
-              <button key={a.e} type="button" onClick={() => { setEmail(a.e); setPassword(a.p); }} className="px-2.5 py-1 rounded-full border border-border bg-background hover:bg-muted font-semibold text-[11px]">
-                {a.label}
-              </button>
-            ))}
-          </div>
-        </div>
 
-        {/* Forgot password dialog */}
-        {forgotOpen && (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-sm rounded-2xl bg-card border border-border p-6 shadow-2xl space-y-3 text-xs">
-              <h2 className="text-base font-bold">Reset password</h2>
-              <p className="text-muted-foreground">Local-account users receive an expiring reset link. Entra ID SSO users reset credentials in Microsoft.</p>
-              <form onSubmit={onForgotSubmit} className="space-y-3">
-                <input type="email" required value={forgotEmail} onChange={e => setForgotEmail(e.target.value)} placeholder="you@organization.org" className="w-full h-10 px-3 rounded-xl border border-border bg-background focus-ring" />
-                <div className="flex justify-end gap-2">
-                  <button type="button" onClick={() => { setForgotOpen(false); setForgotMsg(null); }} className="px-3 py-1.5 rounded-xl border border-border hover:bg-muted font-semibold">Cancel</button>
-                  <button type="submit" className="px-4 py-1.5 font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3]">Send link</button>
-                </div>
-              </form>
-              {forgotMsg && <p className="text-[11px] text-muted-foreground font-semibold">{forgotMsg}</p>}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

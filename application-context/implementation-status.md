@@ -1,3 +1,5 @@
+> **Superseded security status (2026-11-12):** This historical implementation matrix contains incorrect claims about production readiness, encrypted backups, SSO, authorization, and security verification. Read [production-security-assessment.md](production-security-assessment.md) instead. Do not deploy for real data.
+
 # Welfare Pride HPP Reporting Portal — Implementation Status
 
 **Date:** 2026-11-10  

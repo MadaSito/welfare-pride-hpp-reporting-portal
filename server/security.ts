@@ -22,7 +22,8 @@ export type SessionClaims = {
   role: Role;
   tenantId: string | null;
   csrf: string;
-  stage: "full" | "mfa_verify" | "mfa_enroll";
+  stage: "full" | "mfa_verify" | "mfa_enroll" | "password_change";
+  sessionVersion?: number;
   displayName?: string;
   email?: string;
 };
@@ -59,8 +60,11 @@ export function hashIp(ip: string): string {
   return createHash("sha256").update(`${salt}:${ip}`).digest("hex");
 }
 
+// Historic public demo passwords are retained only as a deny-list for migration
+// and recovery. They are never provisioned or displayed to users.
+export const COMPROMISED_LEGACY_PASSWORDS = ["SuperAdmin2026!#W", "AdminPass2026!#W", "ManagerPass2026!#W", "ViewerPass2026!#W"];
 export function validatePassword(password: string): boolean {
-  if (typeof password !== "string") return false;
+  if (typeof password !== "string" || COMPROMISED_LEGACY_PASSWORDS.includes(password)) return false;
   if (password.length < 14 || password.length > 128) return false;
   if (!/[a-z]/.test(password)) return false;
   if (!/[A-Z]/.test(password)) return false;
@@ -99,6 +103,7 @@ export async function createSession(claims: Omit<SessionClaims, "csrf"> & { csrf
     tenantId: claims.tenantId,
     csrf: claims.csrf ?? randomBytes(24).toString("base64url"),
     stage: claims.stage,
+    sessionVersion: claims.sessionVersion,
     displayName: claims.displayName,
     email: claims.email,
   })
@@ -118,12 +123,13 @@ export async function readSession(token: string): Promise<SessionClaims | null> 
     const role = canonicalRole(String(payload.role));
     if (!ROLES.includes(role)) return null;
     const stage = String(payload.stage);
-    if (!["full", "mfa_verify", "mfa_enroll"].includes(stage)) return null;
+    if (!["full", "mfa_verify", "mfa_enroll", "password_change"].includes(stage)) return null;
     return {
       sub: payload.sub,
       role,
       tenantId: typeof payload.tenantId === "string" ? payload.tenantId : null,
       csrf: String(payload.csrf),
+      sessionVersion: typeof payload.sessionVersion === "number" ? payload.sessionVersion : undefined,
       stage: stage as SessionClaims["stage"],
       displayName: typeof payload.displayName === "string" ? payload.displayName : undefined,
       email: typeof payload.email === "string" ? payload.email : undefined,
@@ -165,32 +171,15 @@ export function requireRole(...roles: Role[]) {
   };
 }
 
-function parseOrigin(urlStr?: string | null): string | null {
-  if (!urlStr) return null;
+export function isAllowedOrigin(_req: AuthenticatedRequest, originHeader?: string | null): boolean {
+  if (!originHeader) return true; // Non-browser clients are protected by session and CSRF tokens.
+  const configured = process.env.APP_ORIGIN;
+  if (!configured) return false;
   try {
-    const u = new URL(urlStr.trim());
-    return `${u.protocol}//${u.host}`;
-  } catch {
-    return null;
-  }
-}
-export function isAllowedOrigin(req: AuthenticatedRequest, originHeader?: string | null): boolean {
-  if (!originHeader) return true;
-  const origin = parseOrigin(originHeader);
-  if (!origin) return false;
-  const configured = (process.env.APP_ORIGIN || process.env.ALLOWED_ORIGINS || "")
-    .split(",")
-    .map(s => parseOrigin(s))
-    .filter(Boolean);
-  if (configured.includes(origin)) return true;
-  const host = req.get("host");
-  const proto = (req.get("x-forwarded-proto") || req.protocol || "http").split(",")[0].trim();
-  if (host && origin === `${proto}://${host}`) return true;
-  try {
-    const u = new URL(origin);
-    if (u.hostname.endsWith(".us5.manus.computer") || u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
-  } catch {}
-  return false;
+    const origin = new URL(originHeader);
+    const allowed = new URL(configured);
+    return ["http:", "https:"].includes(allowed.protocol) && originHeader === origin.origin && configured === allowed.origin && origin.origin === allowed.origin;
+  } catch { return false; }
 }
 export function verifyCsrf(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
@@ -199,7 +188,7 @@ export function verifyCsrf(req: AuthenticatedRequest, res: Response, next: NextF
     res.status(403).json({ error: "ORIGIN_REJECTED", requestId: req.requestId });
     return;
   }
-  if (req.session?.stage === "full") {
+  if (req.session) {
     const provided = req.header("x-csrf-token") || "";
     const expected = req.session.csrf || "";
     if (!provided || provided.length !== expected.length || !timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) {

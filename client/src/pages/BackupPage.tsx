@@ -122,7 +122,7 @@ export function BackupPage() {
             <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#5A92C9]/15 text-[#5A92C9] border border-[#5A92C9]/30">Module 5</span>
           </div>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
-            Full snapshot ZIPs (optional AES-256), validated restore with pre-flight safety copy, formula-safe CSV export/import, and JSON config schema portability.
+            Backup creation and restore are temporarily unavailable pending security and integrity fixes. Existing backup files may be unencrypted.
           </p>
         </div>
         <button onClick={load} className="touch-target inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl border border-border bg-card hover:bg-muted focus-ring">
@@ -141,7 +141,7 @@ export function BackupPage() {
       <section className="rounded-2xl bg-card border border-border p-5 panel-shadow space-y-4 text-xs">
         <h2 className="text-sm font-bold flex items-center gap-2"><HardDrive size={16} className="text-[#5A92C9]" /> Create full snapshot</h2>
         <p className="text-muted-foreground">
-          Bundles the SQLite database, branding assets, fonts, config JSON schema, and a SHA-256 manifest. Optionally AES-256-GCM encrypted (recommended before off-site storage).
+          Snapshot creation is disabled because previous versions could create unencrypted archives even when a password was entered.
         </p>
         <div className="flex flex-col sm:flex-row gap-3">
           <label className="flex-1 font-semibold">
@@ -152,8 +152,8 @@ export function BackupPage() {
             </div>
           </label>
           <div className="flex items-end">
-            <button type="button" onClick={create} disabled={creating} className="touch-target px-5 py-2 font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] disabled:opacity-50 focus-ring">
-              {creating ? "Creating…" : "Create snapshot now"}
+            <button type="button" onClick={create} disabled className="touch-target px-5 py-2 font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] disabled:opacity-50 focus-ring">
+              {creating ? "Creating…" : "Snapshot creation unavailable"}
             </button>
           </div>
         </div>
@@ -207,7 +207,7 @@ export function BackupPage() {
       <section className="rounded-2xl bg-card border border-border p-5 panel-shadow space-y-4 text-xs">
         <h2 className="text-sm font-bold flex items-center gap-2"><Upload size={16} className="text-[#D58240]" /> Restore from snapshot</h2>
         <p className="text-muted-foreground">
-          A safety copy of the current database is created automatically before any restore. Use dry-run first to validate schema integrity without modifying data.
+          Restore is disabled: the previous implementation could overwrite an open database without reliable validation. Preserve existing files and seek a tested offline recovery procedure.
         </p>
         <form onSubmit={doRestore} className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -225,8 +225,8 @@ export function BackupPage() {
               <input type="checkbox" checked={dryRun} onChange={e => setDryRun(e.target.checked)} />
               <span>Dry run (validate only, no changes)</span>
             </label>
-            <button type="submit" disabled={restoring} className="touch-target px-5 py-2 font-bold rounded-xl bg-[#D58240] text-white hover:bg-[#b86d30] disabled:opacity-50 focus-ring">
-              {restoring ? "Processing…" : dryRun ? "Run validation" : "Restore now"}
+            <button type="submit" disabled className="touch-target px-5 py-2 font-bold rounded-xl bg-[#D58240] text-white hover:bg-[#b86d30] disabled:opacity-50 focus-ring">
+              {restoring ? "Processing…" : "Restore unavailable"}
             </button>
           </div>
         </form>
