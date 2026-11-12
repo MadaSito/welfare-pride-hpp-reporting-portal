@@ -19,3 +19,9 @@ See `application-context/production-security-assessment.md`, `server/BOOTSTRAP.m
 ## Preview rebuild request
 
 The user requested: “rebuild the site so i can see the changes.” The existing committed application was rebuilt, and a separate temporary preview was started with a newly generated, one-time administrator password and required MFA. Its database contains only ten synthetic sample months and a labeled sample report; the earlier preview database and snapshots were not modified. HTTPS health and the transition to MFA enrollment were verified. The preview remains non-production and must not be used for sensitive or real data. The temporary password, session cookies and MFA seeds are intentionally excluded from this record.
+
+## Dashboard call-round labels
+
+User request: Change “Calls - 1st Round”, “Calls - 2nd Round”, and “Calls - 3rd Round” to “Calls Completed - 1st Round”, “Calls Completed - 2nd Round”, and “Calls Completed - 3rd Round”, respectively.
+
+Result: The three dashboard KPI card labels were updated. TypeScript checking, the production build, and all 27 tests passed. The rebuilt preview served all three updated labels. No database was modified for this change; the preview remains for sample data only, not production use.

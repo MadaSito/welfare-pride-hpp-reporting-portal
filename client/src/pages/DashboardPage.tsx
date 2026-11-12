@@ -234,7 +234,7 @@ export function DashboardPage() {
       {/* KPI Cards — the 9 exact manual metrics + computed rates */}
       <section aria-label="Key performance indicators" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         <MetricCard
-          title="Calls · 1st round"
+          title="Calls Completed - 1st Round"
           value={viewTotals?.calls_round1 ?? "—"}
           subtitle={`${viewTotals?.round1Rate ?? 0}% of all call volume`}
           delta={monthFilter === "all" && data?.latestDelta ? { value: data.latestDelta.totalCallsPct, label: "vs prior month" } : undefined}
@@ -242,14 +242,14 @@ export function DashboardPage() {
           tone="blue"
         />
         <MetricCard
-          title="Calls · 2nd round"
+          title="Calls Completed - 2nd Round"
           value={viewTotals?.calls_round2 ?? "—"}
           subtitle={`${viewTotals?.round2Rate ?? 0}% of call volume`}
           icon={<PhoneCall size={20} />}
           tone="blue"
         />
         <MetricCard
-          title="Calls · 3rd round"
+          title="Calls Completed - 3rd Round"
           value={viewTotals?.calls_round3 ?? "—"}
           subtitle={`${viewTotals?.round3Rate ?? 0}% of call volume`}
           icon={<PhoneCall size={20} />}

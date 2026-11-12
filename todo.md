@@ -2,6 +2,8 @@
 
 The application is not approved for production. See [the security assessment](application-context/production-security-assessment.md) for details and the preview incident.
 
+- [x] Dashboard call-round card labels read “Calls Completed - 1st Round”, “Calls Completed - 2nd Round”, and “Calls Completed - 3rd Round”.
+
 - [ ] Review and test first-admin bootstrap, mandatory password change, MFA enrollment and session revocation end to end.
 - [ ] Fix report visibility, assignment and tenant authorization for lists, direct reads, exports and mutations; add negative-path tests.
 - [ ] Encrypt persistent database, WAL, temporary files and integration credentials with independently managed keys; verify rotation and recovery.
