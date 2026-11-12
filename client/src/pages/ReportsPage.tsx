@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { ExecutiveReportPreview } from "../components/ExecutiveReportPreview";
 import {
   FileText,
   Plus,
@@ -33,7 +34,7 @@ interface Report {
   created_at: string;
   creator_name?: string;
   assignments?: string[];
-  layout_config?: Record<string, unknown>;
+  layout_config?: Record<string, unknown> | string | null;
 }
 
 export function ReportsPage() {
@@ -50,19 +51,24 @@ export function ReportsPage() {
   const [targetType, setTargetType] = useState<"all" | "specific_users" | "view_users">("all");
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [viewUsersList, setViewUsersList] = useState<{ id: string; display_name: string; email: string; role: string }[]>([]);
+  const [publishLoading, setPublishLoading] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const publishRequest = useRef(0);
   const [previewReport, setPreviewReport] = useState<Report | null>(null);
-  const [previewData, setPreviewData] = useState<any>(null);
   const [message, setMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
   // Form state
   const [form, setForm] = useState({
     title: "",
     description: "",
-    reporting_year: new Date().getUTCFullYear(),
+    reporting_year: new Date().getUTCFullYear() as number | "",
     reporting_month: 0,
     widgets: ["kpi_cards", "calls_by_round", "aca_breakdown", "referrals", "trend", "table"],
   });
   const [editId, setEditId] = useState<string | null>(null);
+  const [layoutConfig, setLayoutConfig] = useState<Record<string, unknown>>({});
+  const [saving, setSaving] = useState(false);
 
   const fetchReports = async () => {
     setLoading(true);
@@ -71,10 +77,11 @@ export function ReportsPage() {
       if (statusFilter !== "all") p.set("status", statusFilter);
       if (search) p.set("search", search);
       const res = await fetch(`/api/v1/reports?${p}`);
-      if (res.ok) {
-        const data = await res.json();
-        setReports(data.reports);
-      }
+      if (!res.ok) throw new Error("Could not load reports.");
+      const data = await res.json();
+      setReports(data.reports);
+    } catch {
+      setMessage({ type: "err", text: "Could not load reports. Please try again." });
     } finally {
       setLoading(false);
     }
@@ -82,101 +89,133 @@ export function ReportsPage() {
 
   useEffect(() => { fetchReports(); }, [statusFilter, search]);
 
-  const loadViewUsers = async () => {
-    if (!canEdit) return;
-    try {
-      const res = await fetch("/api/v1/admin/users");
-      if (res.ok) {
-        const d = await res.json();
-        setViewUsersList((d.users || []).filter((u: any) => u.role === "view_only"));
-      }
-    } catch {}
-  };
-
   const saveReport = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
     const body = {
       title: form.title,
-      description: form.description || undefined,
-      reporting_year: form.reporting_year ? Number(form.reporting_year) : undefined,
-      reporting_month: form.reporting_month ? Number(form.reporting_month) : undefined,
-      layout_config: { widgets: form.widgets },
+      description: form.description,
+      reporting_year: form.reporting_year === "" ? null : Number(form.reporting_year),
+      reporting_month: form.reporting_month ? Number(form.reporting_month) : null,
+      layout_config: { ...layoutConfig, widgets: form.widgets },
     };
     const url = editId ? `/api/v1/admin/reports/${editId}` : "/api/v1/admin/reports";
     const method = editId ? "PATCH" : "POST";
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
-      body: JSON.stringify(body),
-    });
-    if (res.ok) {
+    setMessage(null);
+    setSaving(true);
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error("Save failed");
       setCreateOpen(false);
       setEditId(null);
-      setMessage({ type: "ok", text: editId ? "Report updated (version incremented)." : "Draft report created." });
-      fetchReports();
-    } else {
-      setMessage({ type: "err", text: "Save failed" });
+      setMessage({ type: "ok", text: editId ? "Report updated." : "Draft report created." });
+      void fetchReports();
+    } catch {
+      setMessage({ type: "err", text: "Save failed. Please try again." });
+    } finally {
+      setSaving(false);
     }
   };
 
   const startEdit = (r: Report) => {
+    let layout: unknown = r.layout_config ?? {};
+    try {
+      if (typeof layout === "string") layout = JSON.parse(layout);
+      if (!layout || typeof layout !== "object" || Array.isArray(layout)) throw new Error("Invalid layout");
+      if ("widgets" in layout && (!Array.isArray(layout.widgets) || !layout.widgets.every((w: unknown) => typeof w === "string"))) throw new Error("Invalid widgets");
+    } catch {
+      setMessage({ type: "err", text: "This report has invalid layout settings and cannot be edited safely." });
+      return;
+    }
+    const config = layout as Record<string, unknown>;
+    setLayoutConfig(config);
+    setMessage(null);
     setForm({
       title: r.title,
-      description: r.description || "",
-      reporting_year: r.reporting_year || new Date().getUTCFullYear(),
-      reporting_month: r.reporting_month || 0,
-      widgets: Array.isArray((r.layout_config as any)?.widgets) ? (r.layout_config as any).widgets : ["kpi_cards", "trend", "table"],
+      description: r.description ?? "",
+      reporting_year: r.reporting_year ?? "",
+      reporting_month: r.reporting_month ?? 0,
+      widgets: Array.isArray(config.widgets) ? config.widgets as string[] : ["kpi_cards", "trend", "table"],
     });
     setEditId(r.id);
     setCreateOpen(true);
   };
 
   const openPublishModal = async (r: Report) => {
+    const requestId = ++publishRequest.current;
     setPublishTargetModal(r);
-    setTargetType(r.publish_target || "all");
-    setSelectedUsers(r.assignments || []);
-    await loadViewUsers();
+    setPublishLoading(true);
+    setPublishError(null);
+    setSelectedUsers([]);
+    setViewUsersList([]);
+    try {
+      const [detailResponse, candidatesResponse] = await Promise.all([
+        fetch(`/api/v1/reports/${r.id}`),
+        fetch(`/api/v1/reports/${r.id}/publish-candidates`),
+      ]);
+      if (!detailResponse.ok || !candidatesResponse.ok) throw new Error("Load failed");
+      const [detail, candidates] = await Promise.all([detailResponse.json(), candidatesResponse.json()]);
+      if (detail.id !== r.id || !["all", "specific_users", "view_users"].includes(detail.publish_target) ||
+          !Array.isArray(detail.assignments) || !detail.assignments.every((id: unknown) => typeof id === "string") ||
+          !Array.isArray(candidates.users) || !candidates.users.every((u: any) => u && typeof u.id === "string" && typeof u.display_name === "string" && typeof u.email === "string" && u.role === "view_only")) throw new Error("Invalid response");
+      if (requestId !== publishRequest.current) return;
+      setTargetType(detail.publish_target);
+      setSelectedUsers(detail.assignments);
+      setViewUsersList(candidates.users);
+    } catch {
+      if (requestId === publishRequest.current) setPublishError("Could not load publishing settings and recipients. Retry before publishing.");
+    } finally {
+      if (requestId === publishRequest.current) setPublishLoading(false);
+    }
   };
 
   const confirmPublish = async () => {
-    if (!publishTargetModal) return;
-    const res = await fetch(`/api/v1/admin/reports/${publishTargetModal.id}/publish`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
-      body: JSON.stringify({ target: targetType, userIds: targetType === "specific_users" ? selectedUsers : undefined }),
-    });
-    if (res.ok) {
+    if (!publishTargetModal || publishLoading || publishError || publishing ||
+        (targetType === "specific_users" && (!selectedUsers.length || selectedUsers.some(id => !viewUsersList.some(u => u.id === id))))) return;
+    setPublishing(true);
+    try {
+      const res = await fetch(`/api/v1/admin/reports/${publishTargetModal.id}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+        body: JSON.stringify({ target: targetType, userIds: targetType === "specific_users" ? selectedUsers : undefined }),
+      });
+      if (!res.ok) throw new Error("Publish failed");
       setMessage({ type: "ok", text: "Report published." });
       setPublishTargetModal(null);
-      fetchReports();
+      void fetchReports();
+    } catch {
+      setPublishError("Publish failed. Retry loading settings before trying again.");
+    } finally {
+      setPublishing(false);
     }
   };
 
   const hide = async (id: string) => {
-    const res = await fetch(`/api/v1/admin/reports/${id}/hide`, {
-      method: "POST",
-      headers: { ...(csrf ? { "x-csrf-token": csrf } : {}) },
-    });
-    if (res.ok) {
-      setMessage({ type: "ok", text: "Report hidden (draft)." });
-      fetchReports();
-    }
+    try {
+      const res = await fetch(`/api/v1/admin/reports/${id}/hide`, {
+        method: "POST",
+        headers: { ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      });
+      if (!res.ok) throw new Error("Hide failed");
+      setMessage({ type: "ok", text: "Report hidden." });
+      void fetchReports();
+    } catch { setMessage({ type: "err", text: "Could not hide the report. Please try again." }); }
   };
 
   const remove = async (id: string) => {
     if (!confirm("Delete this report permanently?")) return;
-    const res = await fetch(`/api/v1/admin/reports/${id}`, {
-      method: "DELETE",
-      headers: { ...(csrf ? { "x-csrf-token": csrf } : {}) },
-    });
-    if (res.ok) fetchReports();
-  };
-
-  const openPreview = async (r: Report) => {
-    setPreviewReport(r);
-    const yr = r.reporting_year || new Date().getUTCFullYear();
-    const res = await fetch(`/api/v1/dashboard/summary?year=${yr}`);
-    if (res.ok) setPreviewData(await res.json());
+    try {
+      const res = await fetch(`/api/v1/admin/reports/${id}`, {
+        method: "DELETE",
+        headers: { ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      });
+      if (!res.ok) throw new Error("Delete failed");
+      void fetchReports();
+    } catch { setMessage({ type: "err", text: "Could not delete the report. Please try again." }); }
   };
 
   const statusColor: Record<string, string> = {
@@ -205,7 +244,7 @@ export function ReportsPage() {
         </div>
         {canEdit && (
           <button
-            onClick={() => { setForm({ title: "", description: "", reporting_year: new Date().getUTCFullYear(), reporting_month: 0, widgets: ["kpi_cards", "calls_by_round", "aca_breakdown", "referrals", "trend", "table"] }); setEditId(null); setCreateOpen(true); }}
+            onClick={() => { setForm({ title: "", description: "", reporting_year: new Date().getUTCFullYear(), reporting_month: 0, widgets: ["kpi_cards", "calls_by_round", "aca_breakdown", "referrals", "trend", "table"] }); setLayoutConfig({}); setMessage(null); setEditId(null); setCreateOpen(true); }}
             className="touch-target inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] focus-ring"
           >
             <Plus size={14} /> Create report
@@ -287,7 +326,7 @@ export function ReportsPage() {
 
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border text-xs">
                 <button
-                  onClick={() => openPreview(r)}
+                  onClick={() => setPreviewReport(r)}
                   className="touch-target inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-border bg-card hover:bg-muted font-semibold focus-ring"
                 >
                   <Eye size={13} /> Preview
@@ -343,6 +382,7 @@ export function ReportsPage() {
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <form onSubmit={saveReport} className="w-full max-w-lg rounded-2xl bg-card border border-border p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <h2 className="text-base font-bold">{editId ? "Edit report (version will increment)" : "Create report"}</h2>
+            {message?.type === "err" && <p role="alert" className="text-xs text-rose-500">{message.text}</p>}
             <label className="block text-xs font-semibold">
               Title
               <input
@@ -373,9 +413,9 @@ export function ReportsPage() {
                 <input
                   type="number"
                   min={2000}
-                  max={2100}
+                  max={2200}
                   value={form.reporting_year}
-                  onChange={e => setForm(f => ({ ...f, reporting_year: Number(e.target.value) }))}
+                  onChange={e => setForm(f => ({ ...f, reporting_year: e.target.value === "" ? "" : Number(e.target.value) }))}
                   className="mt-1 w-full h-10 px-3 rounded-xl border border-border bg-background text-xs font-semibold focus-ring"
                 />
               </label>
@@ -416,6 +456,7 @@ export function ReportsPage() {
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
+                disabled={saving}
                 onClick={() => setCreateOpen(false)}
                 className="touch-target px-4 py-2 text-xs font-semibold rounded-xl border border-border bg-card hover:bg-muted focus-ring"
               >
@@ -423,6 +464,7 @@ export function ReportsPage() {
               </button>
               <button
                 type="submit"
+                disabled={saving}
                 className="touch-target px-4 py-2 text-xs font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] focus-ring"
               >
                 {editId ? "Save changes" : "Create draft"}
@@ -440,7 +482,9 @@ export function ReportsPage() {
             <p className="text-xs text-muted-foreground">
               Choose who can see this report. View Only users only see reports explicitly published to them.
             </p>
-            <div className="space-y-2 text-xs">
+            {publishLoading && <p className="text-xs" role="status">Loading publishing settings and recipients…</p>}
+            {publishError && <div role="alert" className="text-xs text-rose-500">{publishError} <button type="button" className="underline font-semibold" onClick={() => void openPublishModal(publishTargetModal)}>Retry</button></div>}
+            <fieldset disabled={publishLoading || !!publishError || publishing} className="space-y-2 text-xs disabled:opacity-50">
               <label className="flex items-start gap-2 cursor-pointer p-2 rounded-xl border border-border hover:bg-muted/40">
                 <input
                   type="radio"
@@ -480,17 +524,18 @@ export function ReportsPage() {
                   <div className="text-muted-foreground text-[11px]">Pick exactly which View Only users may see this report</div>
                 </div>
               </label>
-            </div>
+            </fieldset>
 
-            {targetType === "specific_users" && (
+            {!publishLoading && !publishError && targetType === "specific_users" && (
               <div className="max-h-48 overflow-y-auto border border-border rounded-xl p-2 space-y-1 text-xs">
                 {viewUsersList.length === 0 ? (
-                  <p className="text-muted-foreground text-[11px] p-2">No View Only users exist yet.</p>
+                  <p className="text-muted-foreground text-[11px] p-2">No active local View Only users are available.</p>
                 ) : (
                   viewUsersList.map(u => (
                     <label key={u.id} className="flex items-center gap-2 p-1.5 rounded hover:bg-muted/40 cursor-pointer">
                       <input
                         type="checkbox"
+                        disabled={publishing}
                         checked={selectedUsers.includes(u.id)}
                         onChange={e => setSelectedUsers(s => e.target.checked ? [...s, u.id] : s.filter(x => x !== u.id))}
                       />
@@ -499,13 +544,20 @@ export function ReportsPage() {
                     </label>
                   ))
                 )}
+                {selectedUsers.filter(id => !viewUsersList.some(u => u.id === id)).map(id => (
+                  <div key={id} className="flex items-center justify-between gap-2 p-1.5 text-amber-600">
+                    <span>Previously assigned user unavailable ({id}).</span>
+                    <button type="button" disabled={publishing} className="underline" onClick={() => setSelectedUsers(s => s.filter(x => x !== id))}>Remove</button>
+                  </div>
+                ))}
               </div>
             )}
 
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setPublishTargetModal(null)}
+                disabled={publishing}
+                onClick={() => { publishRequest.current++; setPublishTargetModal(null); }}
                 className="touch-target px-4 py-2 text-xs font-semibold rounded-xl border border-border bg-card hover:bg-muted focus-ring"
               >
                 Cancel
@@ -513,7 +565,8 @@ export function ReportsPage() {
               <button
                 type="button"
                 onClick={confirmPublish}
-                className="touch-target px-4 py-2 text-xs font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] focus-ring"
+                disabled={publishLoading || !!publishError || publishing || (targetType === "specific_users" && (!selectedUsers.length || selectedUsers.some(id => !viewUsersList.some(u => u.id === id))))}
+                className="touch-target px-4 py-2 text-xs font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] disabled:opacity-50 focus-ring"
               >
                 Publish now
               </button>
@@ -522,38 +575,14 @@ export function ReportsPage() {
         </div>
       )}
 
-      {/* Preview modal */}
+      {/* Mounted only while open so data and delivery state never carry over to another preview. */}
       {previewReport && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-4xl rounded-2xl bg-card border border-border p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <h2 className="text-lg font-bold">{previewReport.title}</h2>
-                {previewReport.description && <p className="text-xs text-muted-foreground mt-1">{previewReport.description}</p>}
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  {previewReport.reporting_month ? `${FULL_MONTHS[previewReport.reporting_month - 1]} ` : ""}{previewReport.reporting_year || "Full year"} · v{previewReport.version} · {previewReport.status}
-                </p>
-              </div>
-              <button
-                onClick={() => setPreviewReport(null)}
-                className="touch-target px-3 py-1.5 text-xs font-semibold rounded-xl border border-border bg-card hover:bg-muted focus-ring"
-              >
-                Close
-              </button>
-            </div>
-            {previewData && (
-              <div className="text-xs space-y-3">
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="rounded-xl border border-border p-3"><div className="text-muted-foreground text-[11px]">Total calls</div><div className="text-xl font-bold mt-1">{previewData.totals.totalCalls.toLocaleString()}</div></div>
-                  <div className="rounded-xl border border-border p-3"><div className="text-muted-foreground text-[11px]">ACA YES rate</div><div className="text-xl font-bold mt-1 text-emerald-500">{previewData.totals.acaRate}%</div></div>
-                  <div className="rounded-xl border border-border p-3"><div className="text-muted-foreground text-[11px]">Head of household</div><div className="text-xl font-bold mt-1">{previewData.totals.head_of_household.toLocaleString()}</div></div>
-                  <div className="rounded-xl border border-border p-3"><div className="text-muted-foreground text-[11px]">Total referrals</div><div className="text-xl font-bold mt-1">{previewData.totals.totalReferrals.toLocaleString()}</div></div>
-                </div>
-                <p className="text-[11px] text-muted-foreground">Snapshot rendered from current metric data.</p>
-              </div>
-            )}
-          </div>
-        </div>
+        <ExecutiveReportPreview
+          report={previewReport}
+          canEdit={canEdit}
+          csrf={csrf}
+          onClose={() => setPreviewReport(null)}
+        />
       )}
     </div>
   );

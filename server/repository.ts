@@ -556,7 +556,7 @@ export function listMonthlyMetrics(year?: number, tenantId?: string | null): Mon
   let q = `SELECT * FROM monthly_metrics WHERE 1=1`;
   const params: unknown[] = [];
   if (year) { q += ` AND reporting_year = ?`; params.push(year); }
-  if (tenantId) { q += ` AND (tenant_id = ? OR tenant_id IS NULL)`; params.push(tenantId); }
+  if (tenantId !== undefined) { q += ` AND tenant_id = ?`; params.push(tenantId); }
   q += ` ORDER BY reporting_year DESC, reporting_month DESC`;
   return db.prepare(q).all(...params) as MonthlyMetric[];
 }
@@ -619,8 +619,10 @@ export function upsertMonthlyMetric(input: {
   return db.prepare(`SELECT * FROM monthly_metrics WHERE reporting_year = ? AND reporting_month = ? AND (tenant_id = ? OR (tenant_id IS NULL AND ? IS NULL)) LIMIT 1`).get(input.reporting_year, input.reporting_month, input.tenantId, input.tenantId) as MonthlyMetric;
 }
 
-export function listAvailableYears(): number[] {
-  const rows = db.prepare(`SELECT DISTINCT reporting_year FROM monthly_metrics ORDER BY reporting_year DESC`).all() as { reporting_year: number }[];
+export function listAvailableYears(tenantId?: string | null): number[] {
+  const rows = (tenantId === undefined
+    ? db.prepare(`SELECT DISTINCT reporting_year FROM monthly_metrics ORDER BY reporting_year DESC`).all()
+    : db.prepare(`SELECT DISTINCT reporting_year FROM monthly_metrics WHERE tenant_id = ? ORDER BY reporting_year DESC`).all(tenantId)) as { reporting_year: number }[];
   return rows.map(r => r.reporting_year);
 }
 
@@ -647,15 +649,14 @@ export type Report = {
 export function listReports(actor: { id: string; role: Role; tenantId: string | null }, opts?: { year?: number; status?: string; search?: string }): (Report & { creator_name?: string })[] {
   let q = `SELECT r.*, u.display_name AS creator_name FROM reports r LEFT JOIN users u ON u.id = r.created_by WHERE 1=1`;
   const params: unknown[] = [];
+  q += ` AND r.tenant_id = ?`;
+  params.push(actor.tenantId);
   if (actor.role === "view_only") {
     q += ` AND r.status = 'published' AND (
       r.publish_target IN ('all','view_users')
-      OR EXISTS (SELECT 1 FROM report_user_assignments a WHERE a.report_id = r.id AND a.user_id = ?)
+      OR (r.publish_target = 'specific_users' AND EXISTS (SELECT 1 FROM report_user_assignments a WHERE a.report_id = r.id AND a.user_id = ?))
     )`;
     params.push(actor.id);
-  } else if (actor.tenantId) {
-    q += ` AND (r.tenant_id = ? OR r.tenant_id IS NULL)`;
-    params.push(actor.tenantId);
   }
   if (opts?.status) { q += ` AND r.status = ?`; params.push(opts.status); }
   if (opts?.year) { q += ` AND r.reporting_year = ?`; params.push(opts.year); }
@@ -722,8 +723,10 @@ export function updateReport(id: string, fields: Partial<{
 }
 
 export function publishReport(id: string, target: "all" | "specific_users" | "view_users", userIds?: string[]): Report {
-  db.prepare(`UPDATE reports SET status = 'published', publish_target = ?, published_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(target, id);
-  if (target === "specific_users" && userIds) setReportAssignments(id, userIds);
+  db.transaction(() => {
+    db.prepare(`UPDATE reports SET status = 'published', publish_target = ?, published_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(target, id);
+    setReportAssignments(id, target === "specific_users" ? userIds ?? [] : []);
+  })();
   return db.prepare(`SELECT * FROM reports WHERE id = ?`).get(id) as Report;
 }
 
@@ -811,6 +814,7 @@ export function insertAuditEvent(ev: {
 }
 
 export function listAuditEvents(opts?: {
+  tenantId?: string | null;
   actor?: string;
   action?: string;
   severity?: string;
@@ -824,6 +828,8 @@ export function listAuditEvents(opts?: {
 }): { events: AuditEventRow[]; total: number } {
   let where = `WHERE 1=1`;
   const params: unknown[] = [];
+  // Undefined means explicitly global; null never matches a tenant and fails closed.
+  if (opts?.tenantId !== undefined) { where += ` AND tenant_id = ?`; params.push(opts.tenantId); }
   if (opts?.actor) { where += ` AND (actor_id = ? OR actor_email LIKE ?)`; params.push(opts.actor, `%${opts.actor}%`); }
   if (opts?.action) { where += ` AND action LIKE ?`; params.push(`%${opts.action}%`); }
   if (opts?.severity) { where += ` AND severity = ?`; params.push(opts.severity); }
@@ -853,13 +859,13 @@ export type MailLog = {
   bcc: string | null;
   subject: string;
   payload: string | null;
-  status: "sent" | "failed";
+  status: "sent" | "failed" | "simulated" | "unknown";
   error: string | null;
   correlation_id: string | null;
   created_at: string;
 };
 
-export function logMail(entry: { provider: string; recipient: string; bcc?: string | null; subject: string; payload?: string | null; status: "sent" | "failed"; error?: string | null; correlation_id?: string | null }): string {
+export function logMail(entry: { provider: string; recipient: string; bcc?: string | null; subject: string; payload?: string | null; status: "sent" | "failed" | "simulated" | "unknown"; error?: string | null; correlation_id?: string | null }): string {
   const id = randomUUID();
   db.prepare(`INSERT INTO mail_logs (id, provider, recipient, bcc, subject, payload, status, error, correlation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     id, entry.provider, entry.recipient, entry.bcc ?? null, entry.subject, entry.payload ?? null, entry.status, entry.error ?? null, entry.correlation_id ?? null,

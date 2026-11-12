@@ -17,6 +17,16 @@ The application no longer creates public demo accounts or a fixed default admini
 
 This setup has been tested in a temporary local environment, not on the requested Hostinger plan. Confirm that the deployment provides terminal access, the project dependencies and a persistent data directory. It does not make the portal production-ready.
 
+## Executive reports
+
+Open a report in **Report Center** to preview the selected period and download a branded PDF. Published reports can be emailed by an administrator or manager to an active portal user who is authorized to access that report. View-only users can open and download reports published to them. Values are generated from the current metric entries, not an immutable historical snapshot; summed monthly staff entries are not a unique headcount.
+
+The report uses the saved company name and primary/secondary colors from **Branding**, with locally embedded Roboto. For security, PDF logos are limited to supported local PNG/JPEG files under `/assets/branding/`; unsupported, remote, or missing logos fall back to the supplied Welfare Pride logo. A report PDF does not fetch remote images.
+
+An administrator must configure and enable SMTP or Microsoft Graph in **Email Engine** before sending. Simulation does not send email. For reports, a configured global BCC blocks dispatch rather than copying potentially unauthorized recipients. A provider acceptance is not proof of delivery, and an unknown result must be verified before retrying. SMTP uses TLS for attachment submission, but the PDFs are not encrypted end-to-end or password-protected. Integration secrets currently reside in plaintext in SQLite. Do not use the preview for real or sensitive data.
+
+Report access is scoped to an explicit tenant. Legacy users, reports or metrics with no tenant are not automatically reassigned and remain inaccessible to these report features pending a reviewed migration. The standard first-admin bootstrap creates a default tenant on a new database.
+
 ## Hostinger considerations
 
 Hostinger supports Node.js deployments via GitHub and environment variables. Its documented deployment system creates versioned build directories and overwrites managed application files when deploying. The SQLite database and keys must not be placed in the web root or deployment build directory. Confirm that the selected plan has a private, durable, encrypted persistent storage location, reliable backups and the necessary Node.js support before planning any production installation.

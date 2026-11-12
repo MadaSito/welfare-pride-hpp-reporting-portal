@@ -211,7 +211,7 @@ export function Layout({ children }: LayoutProps) {
           <span>© {new Date().getFullYear()} {companyName} · {brand?.tagline || "HPP Reporting Portal"}</span>
           <span className="flex items-center gap-1.5">
             <Lock size={13} className="text-emerald-500" />
-            Protected by role-based access, MFA and immutable audit logging
+            Role-based access · MFA · audit logging
           </span>
         </div>
       </footer>

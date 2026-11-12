@@ -1,12 +1,14 @@
 import express from "express";
 import helmet from "helmet";
 import multer from "multer";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { TOTP, Secret } from "otpauth";
 import { decodeJwt, SignJWT } from "jose";
 import { z } from "zod";
+import Papa from "papaparse";
 
 import {
   ROLES,
@@ -65,6 +67,7 @@ import {
   findReport,
   createReport,
   updateReport,
+  db,
   publishReport,
   hideReport,
   deleteReport,
@@ -89,10 +92,8 @@ import { requestLogging, writeLog } from "./logging";
 import { edgeInfoMiddleware, ipFirewallMiddleware, createLimiters } from "./cloudflare";
 import { dispatchToSiem, flushSiemBuffer, testSiem } from "./siem";
 import { sendEmail, resendMailLog, emailCircuitStatus } from "./email";
+import { canAccessReport, canReceiveReport, eligibleRecipients, executiveReport, renderExecutivePdf } from "./executive-report";
 import {
-  exportMetricsCsv,
-  importMetricsCsv,
-  exportAuditCsv,
   exportJsonConfig,
   importJsonConfig,
   backupFilePath,
@@ -109,6 +110,16 @@ const app = express();
 app.set("trust proxy", true); // parse CF-Connecting-IP / X-Forwarded-For
 
 const limiters = createLimiters();
+const reportLimiter = rateLimit({
+  windowMs: 60_000,
+  max: Number(process.env.REPORT_RATELIMIT_MAX || 60),
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Socket address cannot be forged with forwarding headers. Reverse-proxy
+  // clients share a bucket unless an authenticated edge limiter is configured.
+  keyGenerator: req => ipKeyGenerator(req.socket.remoteAddress || "0.0.0.0"),
+  message: { error: "REPORT_RATE_LIMIT_EXCEEDED" },
+});
 
 // ---------------------------------------------------------------------
 // Middleware stack (zero-trust, security headers, rate limiting)
@@ -131,7 +142,7 @@ app.use(
   }),
 );
 // Set before parsers, rate limiters and CSRF so even rejected auth responses are not cached.
-app.use(["/api/v1/auth", "/api/v1/admin/invitations"], (_req, res, next) => {
+app.use(["/api/v1/auth", "/api/v1/admin/invitations", "/api/v1/reports", "/api/v1/admin/reports", "/api/v1/metrics", "/api/v1/dashboard", "/api/v1/admin/audit", "/api/v1/admin/mail-logs"], (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
@@ -144,6 +155,7 @@ app.use(edgeInfoMiddleware);
 app.use(requestLogging);
 app.use(ipFirewallMiddleware);
 app.use(limiters.standard);
+app.use(["/api/v1/reports", "/api/v1/admin/reports"], reportLimiter);
 app.use(sessionMiddleware);
 // JWTs are not authoritative: consult live account state for every request.
 app.use((req: AuthenticatedRequest, _res, next) => {
@@ -595,25 +607,27 @@ const metricsSchema = z.object({
   notes: z.string().max(2000).optional().nullable(),
 });
 
-app.get("/api/v1/metrics", requireSession, async (req: AuthenticatedRequest, res) => {
+app.get("/api/v1/metrics", requireSession, requireRole("super_admin", "admin", "manager"), async (req: AuthenticatedRequest, res) => {
   const year = req.query.year ? Number(req.query.year) : undefined;
   const rows = listMonthlyMetrics(year, req.session!.tenantId);
   const data = rows.map(m => ({ ...m, kpis: computeKpis(m) }));
   await audit(req, "metrics.list.viewed", 200, "metrics", null, { count: rows.length, year });
-  res.json({ metrics: data, availableYears: listAvailableYears() });
+  res.json({ metrics: data, availableYears: listAvailableYears(req.session!.tenantId) });
 });
 
-app.get("/api/v1/metrics/years", requireSession, (_req, res) => {
-  res.json({ years: listAvailableYears() });
+app.get("/api/v1/metrics/years", requireSession, requireRole("super_admin", "admin", "manager"), (req: AuthenticatedRequest, res) => {
+  res.json({ years: listAvailableYears(req.session!.tenantId) });
 });
 
-app.get("/api/v1/metrics/:year/:month", requireSession, (req: AuthenticatedRequest, res) => {
+app.get("/api/v1/metrics/:year/:month", requireSession, requireRole("super_admin", "admin", "manager"), (req: AuthenticatedRequest, res) => {
+  if (!req.session!.tenantId) return res.status(404).json({ error: "NO_METRIC_DATA" });
   const m = findMonthlyMetric(Number(req.params.year), Number(req.params.month), req.session!.tenantId);
   if (!m) return res.status(404).json({ error: "NO_METRIC_DATA" });
   res.json({ ...m, kpis: computeKpis(m) });
 });
 
 app.put("/api/v1/metrics/:year/:month", requireSession, requireRole("super_admin", "admin", "manager"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
+  if (!req.session!.tenantId) return res.status(403).json({ error: "TENANT_REQUIRED" });
   const payload = {
     ...req.body,
     reporting_month: Number(req.params.month),
@@ -637,14 +651,32 @@ app.put("/api/v1/metrics/:year/:month", requireSession, requireRole("super_admin
 app.post("/api/v1/metrics/import", requireSession, requireRole("super_admin", "admin", "manager"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
   const csvText = req.body?.csv;
   if (!csvText || typeof csvText !== "string") return res.status(400).json({ error: "CSV_REQUIRED" });
-  const result = importMetricsCsv(csvText, req.session!.sub);
+  if (!req.session!.tenantId) return res.status(403).json({ error: "TENANT_REQUIRED" });
+  const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: "greedy" });
+  const result: { imported: number; errors: { row: number; error: string }[] } = { imported: 0, errors: [] };
+  for (let i = 0; i < parsed.data.length; i++) {
+    const row = parsed.data[i];
+    const fields: Record<string, string> = { reporting_year: "Reporting Year", reporting_month: "Reporting Month", calls_round1: "Calls round 1", calls_round2: "Calls round 2", calls_round3: "Calls round 3", aca_yes: "ACA YES", aca_no: "ACA No", head_of_household: "Head of Household", staff_members: "Staff members making calls", calls_jhpp: "Calls referred to JHPP", calls_wr: "Calls referred to WR" };
+    const value: Record<string, unknown> = {};
+    for (const [key, header] of Object.entries(fields)) {
+      const raw = row[header] ?? row[key];
+      value[key] = typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : undefined;
+    }
+    value.notes = row.Notes ?? row.notes ?? null;
+    const metric = metricsSchema.safeParse(value);
+    if (!metric.success) { result.errors.push({ row: i + 2, error: "Invalid or missing metric values" }); continue; }
+    upsertMonthlyMetric({ tenantId: req.session!.tenantId, ...metric.data, entered_by: req.session!.sub });
+    result.imported++;
+  }
+  for (const e of parsed.errors) result.errors.push({ row: (e.row ?? 0) + 2, error: "Invalid CSV" });
   await audit(req, "metrics.csv.imported", 200, "metrics", null, { imported: result.imported, errors: result.errors.length });
   res.json(result);
 });
 
-app.get("/api/v1/metrics/export", requireSession, async (req: AuthenticatedRequest, res) => {
+app.get("/api/v1/metrics/export", requireSession, requireRole("super_admin", "admin", "manager"), async (req: AuthenticatedRequest, res) => {
   const year = req.query.year ? Number(req.query.year) : undefined;
-  const csv = exportMetricsCsv(year);
+  const rows = listMonthlyMetrics(year, req.session!.tenantId);
+  const csv = Papa.unparse({ fields: ["Reporting Year", "Reporting Month", "Calls round 1", "Calls round 2", "Calls round 3", "ACA YES", "ACA No", "Head of Household", "Staff members making calls", "Calls referred to JHPP", "Calls referred to WR", "Notes"], data: rows.map(m => [m.reporting_year,m.reporting_month,m.calls_round1,m.calls_round2,m.calls_round3,m.aca_yes,m.aca_no,m.head_of_household,m.staff_members,m.calls_jhpp,m.calls_wr,m.notes ?? ""]) }, { escapeFormulae: true });
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="wp-hpp-metrics-${year || "all"}.csv"`);
   await audit(req, "metrics.csv.exported", 200, "metrics", null, { year });
@@ -654,7 +686,7 @@ app.get("/api/v1/metrics/export", requireSession, async (req: AuthenticatedReque
 // ---------------------------------------------------------------------
 // Dashboard aggregations & trends
 // ---------------------------------------------------------------------
-app.get("/api/v1/dashboard/summary", requireSession, (req: AuthenticatedRequest, res) => {
+app.get("/api/v1/dashboard/summary", requireSession, requireRole("super_admin", "admin", "manager"), (req: AuthenticatedRequest, res) => {
   const year = req.query.year ? Number(req.query.year) : new Date().getUTCFullYear();
   const rows = listMonthlyMetrics(year, req.session!.tenantId);
   const sorted = rows.slice().sort((a, b) => a.reporting_month - b.reporting_month);
@@ -741,13 +773,20 @@ app.get("/api/v1/dashboard/summary", requireSession, (req: AuthenticatedRequest,
 const reportSchema = z.object({
   title: z.string().min(3).max(180),
   description: z.string().max(2000).optional(),
-  reporting_year: z.number().int().optional(),
-  reporting_month: z.number().int().min(1).max(12).optional(),
+  reporting_year: z.number().int().min(2000).max(2200).nullable().optional(),
+  reporting_month: z.number().int().min(1).max(12).nullable().optional(),
   layout_config: z.record(z.string(), z.unknown()).optional(),
 });
 
+function reportActor(req: AuthenticatedRequest) {
+  return { id: req.session!.sub, role: req.session!.role, tenantId: req.session!.tenantId };
+}
+function accessibleReport(req: AuthenticatedRequest) {
+  const r = findReport(param(req.params.id));
+  return r && canAccessReport(r, reportActor(req)) ? r : null;
+}
 app.get("/api/v1/reports", requireSession, (req: AuthenticatedRequest, res) => {
-  const actor = { id: req.session!.sub, role: req.session!.role, tenantId: req.session!.tenantId };
+  const actor = reportActor(req);
   const rows = listReports(actor, {
     year: req.query.year ? Number(req.query.year) : undefined,
     status: req.query.status as string | undefined,
@@ -756,19 +795,36 @@ app.get("/api/v1/reports", requireSession, (req: AuthenticatedRequest, res) => {
   res.json({ reports: rows });
 });
 
-app.get("/api/v1/reports/:id", requireSession, (req: AuthenticatedRequest, res) => {
-  const r = findReport(param(req.params.id));
+app.get("/api/v1/reports/:id", requireSession, async (req: AuthenticatedRequest, res) => {
+  const r = accessibleReport(req);
   if (!r) return res.status(404).json({ error: "REPORT_NOT_FOUND" });
-  if (req.session!.role === "view_only" && r.status !== "published") {
+  const assignments = req.session!.role !== "view_only" ? getReportAssignments(r.id) : [];
+  await audit(req, "report.viewed", 200, "report", r.id);
+  res.json({ ...executiveReport(r).report, assignments });
+});
+
+app.get("/api/v1/reports/:id/publish-candidates", requireSession, async (req: AuthenticatedRequest, res) => {
+  const r = accessibleReport(req);
+  if (!r) {
+    await audit(req, "report.publish_candidates.denied", 404, "report", param(req.params.id));
     return res.status(404).json({ error: "REPORT_NOT_FOUND" });
   }
-  const assignments = req.session!.role !== "view_only" ? getReportAssignments(r.id) : [];
-  res.json({ ...r, layout_config: r.layout_config ? JSON.parse(r.layout_config) : {}, assignments });
+  if (!["super_admin", "admin", "manager"].includes(req.session!.role)) {
+    await audit(req, "report.publish_candidates.denied", 403, "report", r.id);
+    return res.status(403).json({ error: "ACCESS_DENIED" });
+  }
+  // Exact report tenant, no global user-list fallback, no sensitive account fields.
+  const users = db.prepare(`SELECT id, display_name, email, role FROM users
+    WHERE tenant_id = ? AND role = 'view_only' AND status = 'active' AND auth_provider = 'local'
+    ORDER BY display_name, id`).all(r.tenant_id);
+  await audit(req, "report.publish_candidates.viewed", 200, "report", r.id, { count: users.length });
+  res.json({ users });
 });
 
 app.post("/api/v1/admin/reports", requireSession, requireRole("super_admin", "admin", "manager"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
   const parsed = reportSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_REPORT", issues: parsed.error.issues });
+  if (!req.session!.tenantId) return res.status(403).json({ error: "TENANT_REQUIRED" });
   const r = createReport({
     tenantId: req.session!.tenantId,
     title: parsed.data.title,
@@ -783,7 +839,7 @@ app.post("/api/v1/admin/reports", requireSession, requireRole("super_admin", "ad
 });
 
 app.patch("/api/v1/admin/reports/:id", requireSession, requireRole("super_admin", "admin", "manager"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
-  const r = findReport(param(req.params.id));
+  const r = accessibleReport(req);
   if (!r) return res.status(404).json({ error: "REPORT_NOT_FOUND" });
   const parsed = reportSchema.partial().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_REPORT" });
@@ -800,20 +856,26 @@ app.patch("/api/v1/admin/reports/:id", requireSession, requireRole("super_admin"
 
 const publishSchema = z.object({
   target: z.enum(["all", "specific_users", "view_users"]),
-  userIds: z.array(z.string()).optional(),
+  userIds: z.array(z.string().min(1).max(200)).max(500).optional(),
 });
 app.post("/api/v1/admin/reports/:id/publish", requireSession, requireRole("super_admin", "admin", "manager"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
-  const r = findReport(param(req.params.id));
+  const r = accessibleReport(req);
   if (!r) return res.status(404).json({ error: "REPORT_NOT_FOUND" });
   const parsed = publishSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_PUBLISH_PAYLOAD" });
+  if (parsed.data.target === "specific_users") {
+    const ids = parsed.data.userIds ?? [];
+    if (!ids.length || ids.some(id => { const u = findUserById(id); return !u || u.tenant_id !== r.tenant_id || u.status !== "active" || u.auth_provider !== "local"; })) {
+      return res.status(400).json({ error: "INVALID_REPORT_ASSIGNMENTS" });
+    }
+  }
   const published = publishReport(r.id, parsed.data.target, parsed.data.userIds);
   await audit(req, "report.published", 200, "report", r.id, { target: parsed.data.target, assignments: parsed.data.userIds?.length });
   res.json(published);
 });
 
 app.post("/api/v1/admin/reports/:id/hide", requireSession, requireRole("super_admin", "admin", "manager"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
-  const r = findReport(param(req.params.id));
+  const r = accessibleReport(req);
   if (!r) return res.status(404).json({ error: "REPORT_NOT_FOUND" });
   const hidden = hideReport(r.id);
   await audit(req, "report.hidden", 200, "report", r.id);
@@ -821,7 +883,7 @@ app.post("/api/v1/admin/reports/:id/hide", requireSession, requireRole("super_ad
 });
 
 app.delete("/api/v1/admin/reports/:id", requireSession, requireRole("super_admin", "admin"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
-  const r = findReport(param(req.params.id));
+  const r = accessibleReport(req);
   if (!r) return res.status(404).json({ error: "REPORT_NOT_FOUND" });
   deleteReport(r.id);
   await audit(req, "report.deleted", 200, "report", r.id, { title: r.title });
@@ -829,19 +891,100 @@ app.delete("/api/v1/admin/reports/:id", requireSession, requireRole("super_admin
 });
 
 app.get("/api/v1/reports/:id/export", requireSession, async (req: AuthenticatedRequest, res) => {
-  const r = findReport(param(req.params.id));
+  const r = accessibleReport(req);
   if (!r) return res.status(404).json({ error: "REPORT_NOT_FOUND" });
   res.setHeader("Content-Type", "application/json");
-  res.setHeader("Content-Disposition", `attachment; filename="report-${r.id}.json"`);
+  res.setHeader("Content-Disposition", `attachment; filename="report.json"`);
   await audit(req, "report.exported", 200, "report", r.id);
-  res.json({ report: r, assignments: getReportAssignments(r.id), exportedAt: new Date().toISOString() });
+  res.json({ report: r, assignments: req.session!.role === "view_only" ? [] : getReportAssignments(r.id), exportedAt: new Date().toISOString() });
+});
+
+app.get("/api/v1/reports/:id/executive", requireSession, async (req: AuthenticatedRequest, res) => {
+  const r = accessibleReport(req);
+  if (!r) { await audit(req, "report.executive.denied", 404, "report", param(req.params.id)); return res.status(404).json({ error: "REPORT_NOT_FOUND" }); }
+  const data = executiveReport(r);
+  await audit(req, "report.executive.viewed", 200, "report", r.id, { months: data.monthly.length });
+  res.json(data);
+});
+
+app.get("/api/v1/reports/:id/pdf", requireSession, async (req: AuthenticatedRequest, res) => {
+  const r = accessibleReport(req);
+  if (!r) { await audit(req, "report.pdf.denied", 404, "report", param(req.params.id)); return res.status(404).json({ error: "REPORT_NOT_FOUND" }); }
+  try {
+    const pdf = await renderExecutivePdf(executiveReport(r));
+    const latest = accessibleReport(req);
+    if (!latest || latest.updated_at !== r.updated_at || latest.version !== r.version) {
+      await audit(req, "report.pdf.denied", 404, "report", r.id, { reason: "access_changed" });
+      return res.status(404).json({ error: "REPORT_NOT_FOUND" });
+    }
+    await audit(req, "report.pdf.downloaded", 200, "report", r.id);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", 'attachment; filename="welfare-pride-executive-report.pdf"');
+    res.send(pdf);
+  } catch {
+    await audit(req, "report.pdf.failed", 500, "report", r.id);
+    res.status(500).json({ error: "REPORT_PDF_FAILED" });
+  }
+});
+
+app.get("/api/v1/reports/:id/recipients", requireSession, async (req: AuthenticatedRequest, res) => {
+  const r = accessibleReport(req);
+  if (!r) { await audit(req, "report.recipients.denied", 404, "report", param(req.params.id)); return res.status(404).json({ error: "REPORT_NOT_FOUND" }); }
+  if (req.session!.role === "view_only") { await audit(req, "report.recipients.denied", 403, "report", r.id); return res.status(403).json({ error: "ACCESS_DENIED" }); }
+  const users = eligibleRecipients(r, req.session!.role);
+  await audit(req, "report.recipients.viewed", 200, "report", r.id, { count: users.length });
+  res.json({ users });
+});
+
+app.post("/api/v1/reports/:id/email", requireSession, limiters.writeOps, async (req: AuthenticatedRequest, res) => {
+  const r = accessibleReport(req);
+  if (!r) { await audit(req, "report.email.denied", 404, "report", param(req.params.id)); return res.status(404).json({ error: "REPORT_NOT_FOUND" }); }
+  if (req.session!.role === "view_only") { await audit(req, "report.email.denied", 403, "report", r.id); return res.status(403).json({ error: "ACCESS_DENIED" }); }
+  const parsed = z.object({ recipientUserId: z.string().min(1).max(200) }).strict().safeParse(req.body);
+  if (!parsed.success) { await audit(req, "report.email.denied", 400, "report", r.id); return res.status(400).json({ error: "INVALID_RECIPIENT" }); }
+  const recipient = findUserById(parsed.data.recipientUserId);
+  if (!canReceiveReport(r, recipient) || (req.session!.role !== "super_admin" && recipient.role === "super_admin")) { await audit(req, "report.email.denied", 404, "report", r.id); return res.status(404).json({ error: "RECIPIENT_NOT_FOUND" }); }
+  // Refuse rather than bypass mandatory BCC; sendEmail rechecks atomically at dispatch.
+  if ([getEmailConfig().global_bcc, process.env.GLOBAL_EMAIL_BCC].some(v => v?.trim())) {
+    await audit(req, "report.email.denied", 409, "report", r.id, { reason: "global_bcc" });
+    return res.status(409).json({ error: "REPORT_EMAIL_GLOBAL_BCC_CONFIGURED" });
+  }
+  let dispatchStarted = false;
+  try {
+    const pdf = await renderExecutivePdf(executiveReport(r));
+    const latest = findReport(r.id), currentRecipient = findUserById(recipient.id), actor = findUserById(req.session!.sub);
+    if (!latest || latest.status !== "published" || latest.updated_at !== r.updated_at || latest.version !== r.version || latest.publish_target !== r.publish_target ||
+        !actor || actor.status !== "active" || actor.tenant_id !== req.session!.tenantId || actor.role !== req.session!.role || actor.session_version !== req.session!.sessionVersion ||
+        !canAccessReport(latest, reportActor(req)) || !canReceiveReport(latest, currentRecipient) || (req.session!.role !== "super_admin" && currentRecipient.role === "super_admin") || currentRecipient.email !== recipient.email) {
+      await audit(req, "report.email.denied", 409, "report", r.id, { reason: "access_changed" });
+      return res.status(409).json({ error: "REPORT_ACCESS_CHANGED" });
+    }
+    dispatchStarted = true;
+    const result = await sendEmail({ to: currentRecipient.email, subject: "Welfare Pride executive report", text: "The requested Welfare Pride executive report is attached. Please handle it securely.", correlationId: req.requestId, attachments: [{ filename: "welfare-pride-executive-report.pdf", content: pdf, contentType: "application/pdf" }], requireNoBcc: true });
+    if (!result.ok) {
+      const unknown = result.status === "unknown";
+      const disabled = result.error === "Email engine is disabled";
+      await audit(req, unknown ? "report.email.unknown" : "report.email.failed", disabled ? 409 : 502, "report", r.id, { recipientUserId: recipient.id, provider: result.provider, logId: result.logId });
+      return res.status(disabled ? 409 : 502).json({ ok: false, status: unknown ? "unknown" : "failed", error: unknown ? "REPORT_EMAIL_UNKNOWN" : disabled ? "REPORT_EMAIL_DISABLED" : "REPORT_EMAIL_FAILED" });
+    }
+    const simulated = result.status === "simulated" || result.provider === "simulation";
+    await audit(req, simulated ? "report.email.simulated" : "report.email.accepted", 200, "report", r.id, { recipientUserId: recipient.id, provider: result.provider, logId: result.logId });
+    return res.json({ ok: true, status: simulated ? "simulated" : "accepted", provider: result.provider });
+  } catch {
+    const unknown = dispatchStarted;
+    await audit(req, unknown ? "report.email.unknown" : "report.email.failed", 500, "report", r.id, { recipientUserId: recipient.id });
+    return res.status(500).json({ ok: false, status: unknown ? "unknown" : "failed", error: unknown ? "REPORT_EMAIL_UNKNOWN" : "REPORT_EMAIL_FAILED" });
+  }
 });
 
 // ---------------------------------------------------------------------
 // Audit Center (Module 2 — advanced filtering + CSV export)
 // ---------------------------------------------------------------------
 app.get("/api/v1/admin/audit", requireSession, requireRole("super_admin", "admin"), async (req: AuthenticatedRequest, res) => {
+  if (req.session!.role !== "super_admin" && !req.session!.tenantId) return res.status(403).json({ error: "TENANT_REQUIRED" });
   const result = listAuditEvents({
+    // Super admins are platform-wide, even when assigned a tenant or when tenantId is null.
+    tenantId: req.session!.role === "super_admin" ? undefined : req.session!.tenantId,
     actor: req.query.actor as string,
     action: req.query.action as string,
     severity: req.query.severity as string,
@@ -858,7 +1001,15 @@ app.get("/api/v1/admin/audit", requireSession, requireRole("super_admin", "admin
 });
 
 app.get("/api/v1/admin/audit/export", requireSession, requireRole("super_admin", "admin"), async (req: AuthenticatedRequest, res) => {
-  const csv = exportAuditCsv(req.query.limit ? Number(req.query.limit) : 5000);
+  if (req.session!.role !== "super_admin" && !req.session!.tenantId) return res.status(403).json({ error: "TENANT_REQUIRED" });
+  const { events } = listAuditEvents({
+    tenantId: req.session!.role === "super_admin" ? undefined : req.session!.tenantId,
+    limit: req.query.limit ? Number(req.query.limit) : 5000,
+  });
+  const csv = Papa.unparse({
+    fields: ["Occurred At (UTC)", "Request ID", "Actor Email", "Actor Role", "Action", "Severity", "Resource Type", "Resource ID", "Real IP", "Geo Country", "Method", "Status", "Metadata"],
+    data: events.map(e => [e.occurred_at, e.request_id, e.actor_email ?? "", e.actor_role ?? "", e.action, e.severity, e.resource_type, e.resource_id ?? "", e.real_ip ?? "", e.geo_country ?? "", e.method, e.status_code, e.metadata ?? ""]),
+  }, { newline: "\n", escapeFormulae: true });
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="wp-hpp-audit-${new Date().toISOString().slice(0, 10)}.csv"`);
   await audit(req, "audit.csv.exported", 200, "audit");
@@ -903,15 +1054,35 @@ app.get("/api/v1/admin/email", requireSession, requireRole("super_admin"), (_req
     circuit: emailCircuitStatus(),
   });
 });
+const emailConfigSchema = z.object({
+  primary_provider: z.enum(["smtp", "graph", "simulation"]).optional(),
+  secondary_provider: z.enum(["smtp", "graph", "simulation"]).nullable().optional(),
+  smtp_host: z.string().max(253).nullable().optional(),
+  smtp_port: z.number().int().min(1).max(65535).nullable().optional(),
+  smtp_secure: z.union([z.literal(0), z.literal(1)]).optional(),
+  smtp_user: z.string().max(320).nullable().optional(),
+  smtp_pass: z.string().max(4096).nullable().optional(),
+  smtp_from: z.string().max(320).nullable().optional(),
+  graph_client_id: z.string().max(128).nullable().optional(),
+  graph_client_secret: z.string().max(4096).nullable().optional(),
+  graph_tenant_id: z.string().max(128).regex(/^[A-Za-z0-9.-]+$/).nullable().optional(),
+  graph_sender: z.string().max(320).nullable().optional(),
+  global_bcc: z.string().max(2000).nullable().optional(),
+  enabled: z.union([z.literal(0), z.literal(1)]).optional(),
+}).strict();
 app.put("/api/v1/admin/email", requireSession, requireRole("super_admin"), limiters.writeOps, async (req: AuthenticatedRequest, res) => {
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) return res.status(400).json({ error: "INVALID_EMAIL_CONFIG" });
   const body = { ...req.body };
   if (body.smtp_pass === "__configured__") delete body.smtp_pass;
   if (body.graph_client_secret === "__configured__") delete body.graph_client_secret;
-  const cfg = updateEmailConfig(body);
+  const parsed = emailConfigSchema.safeParse(body);
+  if (!parsed.success) return res.status(400).json({ error: "INVALID_EMAIL_CONFIG" });
+  const cfg = updateEmailConfig(parsed.data);
   await audit(req, "email.config.updated", 200, "email");
   res.json({ ...cfg, smtp_pass: cfg.smtp_pass ? "__configured__" : null, graph_client_secret: cfg.graph_client_secret ? "__configured__" : null });
 });
-app.get("/api/v1/admin/mail-logs", requireSession, requireRole("super_admin", "admin"), (_req, res) => {
+// Mail logs have no tenant provenance, so neither listing nor resend is tenant-safe.
+app.get("/api/v1/admin/mail-logs", requireSession, requireRole("super_admin"), (_req, res) => {
   res.json({ logs: listMailLogs(200) });
 });
 app.post("/api/v1/admin/mail-logs/:id/resend", requireSession, requireRole("super_admin"), async (req: AuthenticatedRequest, res) => {
@@ -1064,4 +1235,5 @@ async function start() {
   });
 }
 
-start();
+export { app };
+if (process.env.NODE_ENV !== "test") start();
