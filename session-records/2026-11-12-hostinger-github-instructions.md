@@ -94,3 +94,11 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 - Fresh install disk footprint: ~3.5–4.5 GB total out of 10 GB SSD on the $4 plan (55–65% full).
 - Added automatic 1 GB swap creation in `deploy/install.sh` for systems with <900 MB RAM so builds succeed.
 - Recommendation: $6/mo (1 GB RAM / 25 GB SSD) for $2/mo more avoids build swapping entirely, gives 2.5× more disk for backups/logs, and is the comfortable, headache-free choice.
+
+## Update — 2026-11-16 (installer stdin/tty fix)
+
+**Reported issue:** Running `curl ... | sudo bash` immediately exited with "Invalid selection." before accepting input, then typing `1` produced "1: command not found".
+
+**Cause:** When the installer is piped from curl, stdin is the curl pipe (which reaches EOF after the script is delivered). The `read` command was reading from that closed pipe instead of the terminal.
+
+**Fix:** Added a `read_input` helper that reads from `/dev/tty` when stdin is a pipe, re-prompts on invalid selection instead of exiting, and dies cleanly only when no terminal is available. Verified the piped-stdin interactive flow end-to-end.

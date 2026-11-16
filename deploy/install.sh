@@ -41,6 +41,13 @@ USAGE
   esac
 done
 
+read_input() {
+  local prompt=$1 var=$2
+  if [[ -t 0 ]]; then read -r -p "$prompt" "$var"
+  elif [[ -r /dev/tty ]]; then read -r -p "$prompt" "$var" < /dev/tty
+  else printf -v "$var" ""; fi
+}
+
 require_root() { [[ $EUID -eq 0 ]] || die "Run this installer as root (e.g. sudo $0)."; }
 
 # ---------- method selection ----------
@@ -53,23 +60,25 @@ if [[ -z "$METHOD" ]]; then
   echo "  2) Docker container (docker compose, persistent SQLite volume)"
   echo "  3) Hostinger verification check (validate an existing Hostinger deployment)"
   echo ""
-  read -r -p "Select [1/2/3]: " choice
-  case "$choice" in
-    1) METHOD="vps" ;;
-    2) METHOD="docker" ;;
-    3) METHOD="hostinger-check" ;;
-    *) die "Invalid selection." ;;
-  esac
+  while true; do
+    read_input "Select [1/2/3]: " choice
+    case "$choice" in
+      1) METHOD="vps"; break ;;
+      2) METHOD="docker"; break ;;
+      3) METHOD="hostinger-check"; break ;;
+      *) [[ -n "$choice" ]] && warn "Invalid selection '$choice' — please enter 1, 2, or 3." || die "No terminal input available. Pass --method=vps|docker|hostinger-check explicitly." ;;
+    esac
+  done
 fi
 
 prompt_config() {
   if [[ -z "$DOMAIN" ]]; then
-    read -r -p "Portal domain or IP (e.g. beacon.welfarepride.org or 203.0.113.5) [127.0.0.1]: " DOMAIN
+    read_input "Portal domain or IP (e.g. beacon.welfarepride.org or 203.0.113.5) [127.0.0.1]: " DOMAIN
     DOMAIN="${DOMAIN:-127.0.0.1}"
   fi
   if [[ -z "$ADMIN_EMAIL" ]]; then
     local def="admin@${DOMAIN}"
-    read -r -p "Initial administrator email [$def]: " ADMIN_EMAIL
+    read_input "Initial administrator email [$def]: " ADMIN_EMAIL
     ADMIN_EMAIL="${ADMIN_EMAIL:-$def}"
   fi
 }
@@ -253,7 +262,7 @@ ENV
 install_hostinger_check() {
   echo ""
   echo -e "${BOLD}Hostinger deployment verification:${RESET}"
-  read -r -p "Enter your deployed URL (e.g. https://beacon.welfarepride.org): " HURL
+  read_input "Enter your deployed URL (e.g. https://beacon.welfarepride.org): " HURL
   echo ""
   echo -n "Health check: "
   curl -fsS --max-time 15 "${HURL}/healthz" 2>/dev/null && ok "healthy" || warn "health endpoint did not respond"
