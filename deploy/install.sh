@@ -113,6 +113,15 @@ install_vps() {
     cd "$APP_DIR"
   fi
 
+  TOTAL_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+  if [[ "$TOTAL_RAM_MB" -lt 900 ]] && ! grep -q 'swap' /proc/swaps 2>/dev/null; then
+    log "Low RAM detected (${TOTAL_RAM_MB} MB) — enabling 1 GB swap so the build succeeds…"
+    fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 2>/dev/null
+    chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile 2>/dev/null || true
+    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    ok "1 GB swap enabled"
+  fi
+
   log "4/8 Installing dependencies and building the portal…"
   pnpm install --frozen-lockfile >/dev/null
   pnpm run build >/dev/null
