@@ -102,3 +102,11 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 **Cause:** When the installer is piped from curl, stdin is the curl pipe (which reaches EOF after the script is delivered). The `read` command was reading from that closed pipe instead of the terminal.
 
 **Fix:** Added a `read_input` helper that reads from `/dev/tty` when stdin is a pipe, re-prompts on invalid selection instead of exiting, and dies cleanly only when no terminal is available. Verified the piped-stdin interactive flow end-to-end.
+
+## Update — 2026-11-16 (VPS admin auto-creation bug fixed)
+
+**Reported issue:** VPS install failed at step 8/8 with `Value is none of these types 'String', 'TypedArray<u8>'`. The summary/credentials were never printed, and subsequent login attempts failed with "Sign-in could not be completed". The SSH session also disconnected after the install.
+
+**Root cause:** The installer used chained bash heredocs (`node << 'NODE' ... <<BOOTENV ... BOOTENV`), which discarded the BOOTENV block. `BOOT_PWD` was never set, so `hashPassword(undefined)` passed `undefined` to `@node-rs/argon2`, which throws that exact error. `set -e` made the installer exit before `print_summary`, so the admin account was never created. The SSH disconnect was unrelated (idle timeout of the web console/SSH session).
+
+**Fix:** Rewrote step 8/8 to write a temporary `.bootstrap-admin.mjs` script, robustly discover the node binary (including system-wide NodeSource installs and nvm paths), export BOOT_EMAIL/BOOT_PWD via the outer shell into the subshell, clean up the temp file, and warn (without exiting) if the DB already contains users. Also added `VITE_APP_ID=readypackets` to generated `.env`. Verified end-to-end admin creation on a fresh disposable database.

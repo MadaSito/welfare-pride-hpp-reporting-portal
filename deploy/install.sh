@@ -48,6 +48,13 @@ read_input() {
   else printf -v "$var" ""; fi
 }
 
+find_node() {
+  for c in /usr/bin/node /usr/local/bin/node "$(command -v node 2>/dev/null)" $(which -a node 2>/dev/null) /root/.nvm/versions/node/*/bin/node /home/*/.nvm/versions/node/*/bin/node; do
+    if [[ -n "$c" && -x "$c" ]]; then echo "$c"; return 0; fi
+  done
+  return 1
+}
+
 require_root() { [[ $EUID -eq 0 ]] || die "Run this installer as root (e.g. sudo $0)."; }
 
 # ---------- method selection ----------
@@ -154,6 +161,7 @@ APP_SESSION_SECRET=${S_SECRET}
 APP_ENCRYPTION_KEY=${E_KEY}
 DATA_DIR=${DATA_DIR}
 TRUST_PROXY=1
+VITE_APP_ID=readypackets
 ENV
   chown "${APP_USER}:${APP_USER}" "$APP_DIR/.env"
   chmod 600 "$APP_DIR/.env"
@@ -193,26 +201,38 @@ ENV
   # 8/8 create administrator automatically
   if [[ "$SKIP_ADMIN" != "yes" ]]; then
     log "8/8 Creating initial administrator account…"
-    su -s /bin/bash "$APP_USER" -c "
-      set -a; source '$APP_DIR/.env'; set +a;
-      node --import tsx - << 'NODE'
-const { bootstrapFirstAdmin, db } = await import('./server/repository.js');
-const { hashPassword } = await import('./server/security.js');
+    BOOT_JS="$APP_DIR/.bootstrap-admin.mjs"
+    cat > "$BOOT_JS" << 'BOOTJS'
+import { bootstrapFirstAdmin, db } from "./server/repository.js";
+import { hashPassword } from "./server/security.js";
 const email = process.env.BOOT_EMAIL;
 const pwd   = process.env.BOOT_PWD;
+if (!email || !pwd) { process.stderr.write("missing BOOT_EMAIL/BOOT_PWD\n"); process.exit(1); }
 try {
   const hash = await hashPassword(pwd);
   bootstrapFirstAdmin(email, hash);
+  process.stdout.write("OK\n");
   process.exit(0);
 } catch (e) {
-  process.stderr.write(String(e.message||e));
+  process.stderr.write(String(e.message || e) + "\n");
   process.exit(1);
-} finally { try { db.close(); } catch {} }
-NODE" <<BOOTENV
-export BOOT_EMAIL='$ADMIN_EMAIL'
-BOOT_PWD='$A_PWD'
-BOOTENV
-    # fallback: non-fatal if already created
+} finally {
+  try { db.close(); } catch {}
+}
+BOOTJS
+    chown "${APP_USER}:${APP_USER}" "$BOOT_JS"
+    chmod 600 "$BOOT_JS"
+    NODE_BIN="$(find_node || true)"
+    BOOT_OUT=""
+    if [[ -n "$NODE_BIN" ]]; then
+      BOOT_OUT=$(su -m -s /bin/bash "$APP_USER" -c "
+        set -a; source '${APP_DIR}/.env' 2>/dev/null; set +a
+        export BOOT_EMAIL='$ADMIN_EMAIL' BOOT_PWD='$A_PWD'
+        cd '${APP_DIR}'
+        '${NODE_BIN}' --import tsx .bootstrap-admin.mjs 2>&1") || true
+    fi
+    rm -f "$BOOT_JS"
+    [[ "$BOOT_OUT" == *"OK"* ]] || warn "Admin creation note: ${BOOT_OUT}"
   fi
 
   print_summary
