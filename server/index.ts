@@ -85,6 +85,8 @@ import {
   listIpRules,
   addIpRule,
   deleteIpRule,
+  countUsers,
+  completeFirstTimeSetup,
   type DbUser,
 } from "./repository";
 import { recordAudit } from "./audit";
@@ -303,6 +305,50 @@ app.get("/api/v1/health", (_req, res) => {
 // ---------------------------------------------------------------------
 app.get("/api/v1/branding", (_req, res) => {
   res.json(getBrandConfig());
+});
+
+// ---------------------------------------------------------------------
+// First-time setup (no accounts yet -> create initial super_admin)
+// ---------------------------------------------------------------------
+app.get("/api/v1/auth/setup/status", (_req, res) => {
+  const count = countUsers();
+  res.json({ setupNeeded: count === 0, userCount: count });
+});
+
+const setupSchema = z.object({
+  email: z.string().trim().email().max(254),
+  password: z.string().min(14).max(256),
+  displayName: z.string().max(120).optional(),
+  companyName: z.string().max(120).optional(),
+  tagline: z.string().max(200).optional(),
+  primaryColor: z.string().regex(/^#[0-9A-Fa-f]{3,8}$/).optional(),
+  secondaryColor: z.string().regex(/^#[0-9A-Fa-f]{3,8}$/).optional(),
+  logoUrl: z.string().max(500).optional(),
+});
+
+app.post("/api/v1/auth/setup", limiters.authStrict, async (req: AuthenticatedRequest, res) => {
+  if (countUsers() !== 0) return res.status(409).json({ error: "SETUP_ALREADY_COMPLETED" });
+  const parsed = setupSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "INVALID_SETUP_PAYLOAD", details: parsed.error.issues });
+  const { email, password, displayName, companyName, tagline, primaryColor, secondaryColor, logoUrl } = parsed.data;
+  if (!validatePassword(password)) return res.status(400).json({ error: "PASSWORD_POLICY", message: "Password must be at least 14 characters, with uppercase, lowercase, at least 2 numbers, and at least 3 special characters." });
+  const passwordHash = await hashPassword(password);
+  const branding: { company_name?: string; tagline?: string; primary_color?: string; secondary_color?: string; logo_url?: string } = {};
+  if (companyName) branding.company_name = companyName;
+  if (tagline) branding.tagline = tagline;
+  if (primaryColor) branding.primary_color = primaryColor;
+  if (secondaryColor) branding.secondary_color = secondaryColor;
+  if (logoUrl) branding.logo_url = logoUrl;
+  try {
+    const { userId } = completeFirstTimeSetup({ email, passwordHash, displayName, branding });
+    await audit(req, "auth.setup.completed", 201, "user", userId, { email, role: "super_admin" });
+    writeLog("info", "auth.setup.completed", { email });
+    res.status(201).json({ ok: true, email, userId });
+  } catch (err: any) {
+    if (err?.message === "SETUP_ALREADY_COMPLETED") return res.status(409).json({ error: "SETUP_ALREADY_COMPLETED" });
+    writeLog("error", "auth.setup.failed", { message: err?.message });
+    res.status(500).json({ error: "SETUP_FAILED" });
+  }
 });
 
 // ---------------------------------------------------------------------

@@ -25,3 +25,15 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 3. Verified both entry points start the server and respond to health checks.
 4. All 161 tests pass.
 5. Advised the user to set **Entry file** = `dist/index.js` with **Express** framework in Hostinger, or redeploy the updated repo where any of `dist/index.js`, `index.js`, or `server.js` will resolve.
+
+## Update — 2026-11-16: First-time setup wizard on the login page (no SSH required)
+
+**Problem:** The administrator could not access the Hostinger SSH console, so the CLI bootstrap command was unreachable.
+
+**Solution:** Added an in-browser first-time setup wizard:
+- `GET /api/v1/auth/setup/status` reports whether any users exist.
+- `POST /api/v1/auth/setup` creates the initial `super_admin` account locally in the database, with MFA enrollment required on first sign-in, and optionally persists company name, tagline, brand colors (multiple hex values) and logo URL.
+- On a fresh installation the login page automatically shows the setup wizard; after exactly one submission the endpoint is permanently locked (`409 SETUP_ALREADY_COMPLETED`) and subsequent visitors see only the standard sign-in page.
+- No email access and no SSH access are required for the initial setup.
+
+**Verification:** 9 new tests in `server/setup.test.ts` (all passed), full suite 12/12 files and 170 tests passing, build clean, smoke test with live server + `curl` simulating the real browser flow end-to-end. README and the Hostinger installation guide were updated to describe the wizard as the primary method.

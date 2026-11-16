@@ -13,9 +13,11 @@ A Node.js/Express and React portal for manually entered HPP outreach metrics and
 
 ## First administrator on a new database
 
-The application no longer creates public demo accounts or a fixed default administrator. An operator with a private interactive terminal can run the [bootstrap command](server/BOOTSTRAP.md) against the same persistent data directory used by the server. It creates a super administrator only when no users exist, generates a random temporary password and shows it once on that terminal. The first sign-in requires MFA enrollment and a password change before portal access. Existing databases are not reset; accounts with the previously published demo passwords are quarantined on startup, and a recovery procedure for those accounts is not yet supplied.
+The application no longer creates public demo accounts or a fixed default administrator. On a brand-new installation with an empty database, **open the site in your browser**: the login page detects that no accounts exist and automatically shows a **first-time setup wizard** where you enter your email, choose a strong password, and (optionally) customize the company name, tagline, brand colors and logo. Submitting creates the initial super administrator locally — no email access and no SSH required. The wizard runs exactly once; subsequent visitors only ever see the normal sign-in page. The first sign-in continues straight into MFA enrollment before portal access.
 
-This setup has been tested in a temporary local environment, not on the requested Hostinger plan. Confirm that the deployment provides terminal access, the project dependencies and a persistent data directory. It does not make the portal production-ready.
+Operators with an interactive terminal can alternately run the [bootstrap command](server/BOOTSTRAP.md) against the same persistent data directory used by the server. It creates the super administrator only when no users exist, generates a random temporary password shown once on that terminal, and also requires MFA enrollment on first sign-in.
+
+Existing databases are not reset; accounts with previously published demo passwords are quarantined on startup, and a recovery procedure for those accounts is not yet supplied. This setup has been tested in a temporary local environment, not on the requested Hostinger plan. It does not make the portal production-ready.
 
 ## Email sign-in links
 

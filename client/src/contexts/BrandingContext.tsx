@@ -43,6 +43,8 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
         if (data.company_name) {
           document.title = `${data.company_name} | ${data.tagline || "HPP Reporting Portal"}`;
         }
+        if (data.primary_color) document.documentElement.style.setProperty("--brand-blue", data.primary_color);
+        if (data.secondary_color) document.documentElement.style.setProperty("--brand-amber", data.secondary_color);
       }
     } catch {}
   }, []);

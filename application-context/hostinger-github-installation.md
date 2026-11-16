@@ -70,27 +70,27 @@ Before creating the administrator, verify the deployed application responds at `
 
 ## 6. Create the first administrator
 
-There is **no standard default password**. On a new, empty database, the bootstrap command creates the first administrator and prints a random temporary password **once**. It refuses to create an administrator if users already exist. It can run migrations, so do not run it against an existing database as a diagnostic or reset. The Hostinger database is separate from the preview database; preview credentials and reports are not automatically transferred.
+There is **no standard default password**. On a new, empty database, open the site in your browser — the sign-in page detects that no accounts exist and automatically presents a **first-time setup wizard**:
 
-1. Enable SSH in Hostinger, connect using the command shown by hPanel, and verify the host-key fingerprint. Use a private interactive terminal; do not record its output. [2]
-2. Change to the active app directory, substituting your actual domain:
+1. Open `https://your-reporting-domain.example` in a private/incognito window.
+2. Enter your administrator email and a strong password (14+ characters, upper/lower, at least 2 numbers, 3 special characters).
+3. Optionally expand **Customize branding** to set your company name, tagline, brand colors (multiple hex values) and logo URL.
+4. Click **Create administrator account**. The super administrator is created locally in the database — **no email access and no SSH required**.
+5. Continue immediately into MFA enrollment (scan the QR code with your authenticator app, save the recovery codes), then into the dashboard.
 
-   ```sh
-   cd ~/domains/your-reporting-domain.example/hbuilds/current/nodejs
-   ```
+The setup wizard runs **exactly once**. Afterward, every visitor only ever sees the standard sign-in page.
 
-   Hostinger documents that path for its current server-side deployments; your plan's layout may differ. [3]
+### Alternative (CLI, optional)
 
-3. Set the **same absolute `DATA_DIR` configured in hPanel**, and run the bootstrap command with your own administrator email:
+Operators with an interactive SSH terminal can instead run the bootstrap command. It creates the super administrator only when no users exist, generates a random temporary password shown once on that terminal, and also requires MFA enrollment on first sign-in:
 
-   ```sh
-   export DATA_DIR=/absolute/hostinger-confirmed/private/persistent/directory
-   node --import tsx server/bootstrap-admin.ts --email administrator@example.org
-   ```
+```sh
+cd ~/domains/your-reporting-domain.example/hbuilds/current/nodejs
+export DATA_DIR=/absolute/hostinger-confirmed/private/persistent/directory
+node --import tsx server/bootstrap-admin.ts --email administrator@example.org
+```
 
-   If you configured `SQLITE_PATH` for the server, export that exact same absolute path in the terminal as well. Run as an OS user allowed to access the same database. If `tsx`, the source files, the runtime or the persistent directory are missing, stop and resolve that with Hostinger rather than initializing a different database.
-
-4. Privately save the temporary password in a password manager. Sign in over HTTPS, enroll MFA, save the recovery codes, and replace the temporary password when prompted. The bootstrap process does not display it again. Do not share it in chat, logs, or tickets.
+The Hostinger database is separate from any preview database; credentials and reports are not automatically transferred.
 
 If the database already contains accounts, **do not delete it or rerun bootstrap to regain access**. There is no completed self-service recovery procedure for existing accounts. Preserve the data and arrange an authorized, verified recovery procedure.
 

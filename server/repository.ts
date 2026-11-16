@@ -1081,4 +1081,42 @@ export function bootstrapFirstAdmin(email: string, passwordHash: string): string
     return createUser({ tenantId, email, displayName: "Initial administrator", role: "super_admin", passwordHash, status: "active", mfaRequired: true, mustChangePassword: true });
   }).immediate();
 }
+
+export function countUsers(): number {
+  const row = db.prepare("SELECT count(*) AS count FROM users").get() as { count: number };
+  return row.count;
+}
+
+export function completeFirstTimeSetup(input: {
+  email: string;
+  passwordHash: string;
+  displayName?: string;
+  branding?: Partial<{
+    company_name: string;
+    tagline: string;
+    primary_color: string;
+    secondary_color: string;
+    logo_url: string;
+  }>;
+}): { userId: string } {
+  return db.transaction(() => {
+    const { count } = db.prepare("SELECT count(*) AS count FROM users").get() as { count: number };
+    if (count !== 0) throw new Error("SETUP_ALREADY_COMPLETED");
+    const tenantId = ensureDefaultTenant();
+    const userId = createUser({
+      tenantId,
+      email: input.email.trim().toLowerCase(),
+      displayName: (input.displayName || "Administrator").trim(),
+      role: "super_admin",
+      passwordHash: input.passwordHash,
+      status: "active",
+      mfaRequired: true,
+      mustChangePassword: false,
+    });
+    if (input.branding && Object.keys(input.branding).length > 0) {
+      updateBrandConfig(input.branding as any, userId);
+    }
+    return { userId };
+  }).immediate();
+}
 runMigrations();
