@@ -65,3 +65,21 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 - Both native modules use ABI-stable N-API (forward-compatible).
 - Added `"engines": { "node": ">=22" }` to `package.json` to formally declare support.
 - **Recommendation:** stick with **Node 22.x** (Active LTS), which is what the portal was built and tested against. If Node 24.x is selected, it should still work, but 22.x is the safer, verified choice.
+
+## Update — 2026-11-16 (VPS auto-installer, Manus branding cleanup)
+
+**Questions:**
+1. If I install on a VPS, will it auto-create the first admin account or ask me?
+2. Hostinger loaded but didn't ask to set the password.
+3. Give me the script to auto install this application.
+
+**Answers & actions:**
+1. Explained why Hostinger didn't show the wizard: the database already had a user from a previous session, and the live deployment was running an older JS build. To fix: delete `portal.db` in File Manager, then Redeploy.
+2. Verified live site: Hostinger is currently serving the default parking page (app not running) — Redeploy is required, OR move to VPS.
+3. Created `deploy/install.sh` (universal installer) supporting three methods chosen interactively or via flags:
+   - VPS/bare metal (systemd + optional Caddy automatic HTTPS)
+   - Docker (compose + persistent SQLite volume)
+   - Hostinger verification mode
+   The VPS method **automatically creates the first administrator** with a randomly generated, policy-compliant password, and **displays username, password, portal URL, and next-steps instructions upon completion**.
+4. Manus branding cleanup: deleted `template.json`, removed manus references from `.gitignore`, renamed test fixtures. Zero references remain in repo source.
+5. README updated with one-liner `curl ... | sudo bash` install command. All 171 tests pass, build clean.

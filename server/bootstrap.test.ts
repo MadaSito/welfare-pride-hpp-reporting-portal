@@ -80,7 +80,7 @@ describe("secure bootstrap and first sign-in", () => {
       return { status: res.status, body: await res.json(), cookie: res.headers.get("set-cookie")?.split(";")[0] || "" };
     };
     expect((await request("/api/v1/metrics", { cookie: `wp_session=${forgedOldFull}` })).status).toBe(401);
-    expect((await request("/api/v1/auth/login", { method: "POST", body: { email: "first@example.org", password }, origin: "https://evil.us5.manus.computer" })).status).toBe(403);
+    expect((await request("/api/v1/auth/login", { method: "POST", body: { email: "first@example.org", password }, origin: "https://evil.attacker.test" })).status).toBe(403);
     expect((await request("/api/v1/auth/forgot", { method: "POST", body: { email: "first@example.org" } })).status).toBe(501);
     const login = await request("/api/v1/auth/login", { method: "POST", body: { email: "first@example.org", password } });
     expect(login.body.stage).toBe("mfa_enroll");

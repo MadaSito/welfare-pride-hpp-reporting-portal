@@ -1,0 +1,16 @@
+# Caddy automatic-HTTPS reverse proxy template
+# Replace beacon.welfarepride.org with your actual domain.
+#
+# Usage:
+#   1. Point your domain's DNS A/AAAA record at this server's public IP
+#   2. Install Caddy (apt install -y debian-keyring debian-archive-keyring apt-transport-https curl && ...)
+#   3. Copy this file to /etc/caddy/Caddyfile, then: systemctl reload caddy
+
+beacon.welfarepride.org {
+    reverse_proxy 127.0.0.1:3000
+    encode zstd gzip
+
+    # TLS is provisioned and renewed automatically by Caddy (Let's Encrypt / ZeroSSL).
+    # Optional: uncomment to enforce HSTS after HTTPS is confirmed working.
+    # header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}

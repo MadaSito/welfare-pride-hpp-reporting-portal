@@ -47,6 +47,22 @@ Host-level access can bypass portal login. Host administrators, a compromised ap
 - [Hostinger environment variables](https://www.hostinger.com/support/how-to-add-environment-variables-during-node-js-application-deployment/)
 - [Microsoft Entra SAML setup](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/add-application-portal-setup-sso)
 
+## Automated deployment (VPS, bare metal, Docker)
+
+A single universal installer ([`deploy/install.sh`](deploy/install.sh)) supports three methods:
+
+1. **VPS / bare metal** (Ubuntu 22.04+ or Debian 12+) — installs Node 22, pnpm, systemd service, and optionally Caddy for automatic Let's Encrypt HTTPS. It creates the first administrator automatically and prints the username, password, and portal URL upon completion.
+2. **Docker** — `docker compose` with a persistent SQLite volume.
+3. **Hostinger verification** — checks a live deployment's health and asset version.
+
+On a fresh VPS (e.g. a $4–6/mo DigitalOcean Droplet, Hetzner, or Linode), run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MadaSito/welfare-pride-hpp-reporting-portal/main/deploy/install.sh | sudo bash
+```
+
+Or clone first: `git clone https://github.com/MadaSito/welfare-pride-hpp-reporting-portal.git && cd welfare-pride-hpp-reporting-portal && sudo ./deploy/install.sh`. Non-interactive flags: `--method=vps --domain=beacon.welfarepride.org --email=admin@welfarepride.org`. The installer generates strong random secrets (`APP_SESSION_SECRET`, `APP_ENCRYPTION_KEY`, and a policy-compliant admin password) automatically, so no manual password entry is required.
+
 ## Repository and checks
 
 The repository is [MadaSito/welfare-pride-hpp-reporting-portal](https://github.com/MadaSito/welfare-pride-hpp-reporting-portal); access requires permission to the private repository.

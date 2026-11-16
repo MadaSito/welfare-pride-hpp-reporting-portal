@@ -76,7 +76,7 @@ describe("isAllowedOrigin", () => {
     process.env.APP_ORIGIN = "https://portal.example.org";
     try {
       expect(isAllowedOrigin(req, "https://portal.example.org")).toBe(true);
-      expect(isAllowedOrigin(req, "https://evil.us5.manus.computer")).toBe(false);
+      expect(isAllowedOrigin(req, "https://evil.attacker.test")).toBe(false);
       expect(isAllowedOrigin(req, "http://localhost:3000")).toBe(false);
       expect(isAllowedOrigin(req, "https://portal.example.org.evil.test")).toBe(false);
       expect(isAllowedOrigin(req, "https://portal.example.org/path")).toBe(false);

@@ -1,0 +1,23 @@
+[Unit]
+Description=Welfare Pride HPP Reporting Portal
+After=network.target
+
+[Service]
+Type=simple
+User=portal
+Group=portal
+WorkingDirectory=/opt/welfare-pride-portal
+EnvironmentFile=/opt/welfare-pride-portal/.env
+ExecStart=/usr/bin/env node dist/index.js
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=welfare-pride-portal
+PrivateTmp=true
+ProtectSystem=full
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
