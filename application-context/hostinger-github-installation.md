@@ -102,6 +102,10 @@ Hostinger says a push to the connected branch can trigger a rebuild automaticall
 
 If the app fails, check Hostinger’s build and runtime logs for missing development dependencies, native module errors, missing variables, file permissions or an incorrect entry file. Do not post log lines containing secrets or personal information. A working deployment or green health check does not resolve the security blockers.
 
+### Common build errors
+
+- **`ERROR: Entry file not found`** — the build succeeded but Hostinger’s **Entry file** field doesn’t match the file that was produced. Fix: go to **Deployments → Settings & Redeploy**, verify the framework is **Express**, and set **Entry file** to `dist/index.js` (or `index.js` / `server.js` with the updated repository). Leave the **Output directory** field empty. Then click **Save and Redeploy**.
+
 ## References
 
 [1]: https://www.hostinger.com/support/how-to-deploy-a-nodejs-website-in-hostinger/ "Hostinger: add a Node.js web app"

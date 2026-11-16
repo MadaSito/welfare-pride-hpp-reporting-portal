@@ -127,5 +127,6 @@
     "overrides": {
       "tailwindcss>nanoid": "3.3.7"
     }
-  }
+  },
+  "main": "dist/index.js"
 }
