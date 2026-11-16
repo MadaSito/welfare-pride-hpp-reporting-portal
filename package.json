@@ -128,5 +128,8 @@
       "tailwindcss>nanoid": "3.3.7"
     }
   },
-  "main": "dist/index.js"
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=22"
+  }
 }

@@ -54,3 +54,14 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 4. Added 30-sample property test verifying every generated password satisfies server policy rules.
 
 **Recovery path for the user:** because the created password is unknown, delete/rename `portal.db` in Hostinger File Manager to re-show the wizard, then use the "Generate strong password" button and copy the password.
+
+## Update — 2026-11-16 (Node version compatibility)
+
+**Question:** Will this run on Node 24.x?
+
+**Answer verified:** Yes, with a caveat.
+- `better-sqlite3` declares `engines: { "node": ">=22" }`
+- `@node-rs/argon2` declares `engines: { "node": ">=10" }`
+- Both native modules use ABI-stable N-API (forward-compatible).
+- Added `"engines": { "node": ">=22" }` to `package.json` to formally declare support.
+- **Recommendation:** stick with **Node 22.x** (Active LTS), which is what the portal was built and tested against. If Node 24.x is selected, it should still work, but 22.x is the safer, verified choice.

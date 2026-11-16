@@ -25,7 +25,7 @@ Choose the **Express.js** server preset, not a static React/Vite deployment. The
 
 - **Root directory:** repository root (`/` or blank).
 - **Branch:** `main`.
-- **Node.js:** `22.x`, at least **22.12.0**. The application has been locally exercised with Node 22; Hostinger supports the 22.x selection. [5]
+- **Node.js:** select **22.x** (recommended, tested). Node **24.x** is also compatible (the application declares `node >=22` and its native modules support it), but 22.x is the LTS line the portal was built and verified against. [5]
 - **Package manager:** `pnpm`; the repository declares pnpm `10.4.1` and contains `pnpm-lock.yaml`. Hostinger documents automatic pnpm detection. [6]
 - **Build script:** select `build`; if the field asks for a shell command, use `pnpm run build`.
 - **Entry file:** `dist/index.js`.
