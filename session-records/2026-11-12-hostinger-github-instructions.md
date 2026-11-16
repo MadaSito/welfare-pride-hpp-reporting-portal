@@ -110,3 +110,13 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 **Root cause:** The installer used chained bash heredocs (`node << 'NODE' ... <<BOOTENV ... BOOTENV`), which discarded the BOOTENV block. `BOOT_PWD` was never set, so `hashPassword(undefined)` passed `undefined` to `@node-rs/argon2`, which throws that exact error. `set -e` made the installer exit before `print_summary`, so the admin account was never created. The SSH disconnect was unrelated (idle timeout of the web console/SSH session).
 
 **Fix:** Rewrote step 8/8 to write a temporary `.bootstrap-admin.mjs` script, robustly discover the node binary (including system-wide NodeSource installs and nvm paths), export BOOT_EMAIL/BOOT_PWD via the outer shell into the subshell, clean up the temp file, and warn (without exiting) if the DB already contains users. Also added `VITE_APP_ID=readypackets` to generated `.env`. Verified end-to-end admin creation on a fresh disposable database.
+
+## Update — 2026-11-16 (diagnosed: account locked after failed sign-in attempts)
+
+**Diagnosis of live site `beacon.welfarepride.org`:**
+- `GET /healthz` → `{"ok":true,"version":"2.0.0"}`
+- `GET /api/v1/auth/setup/status` → `{"setupNeeded":false,"userCount":1}`
+- `POST /api/v1/auth/login` for `it@welfarepride.org` → `HTTP 423 {"error":"ACCOUNT_LOCKED","retryAfter":"2026-11-16 17:11:52"}`
+- Live JS asset `index-ftioeFFq.js` matches latest build — latest code is already deployed.
+
+**Conclusion:** The account exists and is locked after 5 failed attempts. The previous in-place reset one-liner threw a SyntaxError because piped scripts run as CommonJS (`await is only valid in async functions`). Provided a tested, async-IIFE-wrapped one-liner that unlocks and resets the first user's password in one command.
