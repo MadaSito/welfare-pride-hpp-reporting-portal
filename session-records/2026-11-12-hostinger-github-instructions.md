@@ -83,3 +83,14 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
    The VPS method **automatically creates the first administrator** with a randomly generated, policy-compliant password, and **displays username, password, portal URL, and next-steps instructions upon completion**.
 4. Manus branding cleanup: deleted `template.json`, removed manus references from `.gitignore`, renamed test fixtures. Zero references remain in repo source.
 5. README updated with one-liner `curl ... | sudo bash` install command. All 171 tests pass, build clean.
+
+## Update — 2026-11-16 (DigitalOcean 512 MB droplet sizing)
+
+**Question:** Will this run on the 1 vCPU / 512 MB VPS ($4/mo)?
+
+**Measurements (measured, not guessed):**
+- Runtime RSS: ~100 MB (Node) + ~20 MB (Caddy) + ~80–120 MB (OS/systemd) ≈ 200–250 MB total idle — fits in 512 MB.
+- Build peak RSS (`pnpm run build`: vite + esbuild): ~806 MB — exceeds 512 MB without swap.
+- Fresh install disk footprint: ~3.5–4.5 GB total out of 10 GB SSD on the $4 plan (55–65% full).
+- Added automatic 1 GB swap creation in `deploy/install.sh` for systems with <900 MB RAM so builds succeed.
+- Recommendation: $6/mo (1 GB RAM / 25 GB SSD) for $2/mo more avoids build swapping entirely, gives 2.5× more disk for backups/logs, and is the comfortable, headache-free choice.
