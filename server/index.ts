@@ -356,7 +356,7 @@ app.post("/api/v1/auth/setup", limiters.authStrict, async (req: AuthenticatedReq
 // ---------------------------------------------------------------------
 app.use("/api/v1/auth/magic-link", magicLinkRouter(issueSession));
 const loginSchema = z.object({
-  email: z.string().email(),
+  email: z.string().trim().email(),
   password: z.string().min(1),
 });
 

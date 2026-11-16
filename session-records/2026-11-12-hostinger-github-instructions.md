@@ -37,3 +37,20 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 - No email access and no SSH access are required for the initial setup.
 
 **Verification:** 9 new tests in `server/setup.test.ts` (all passed), full suite 12/12 files and 170 tests passing, build clean, smoke test with live server + `curl` simulating the real browser flow end-to-end. README and the Hostinger installation guide were updated to describe the wizard as the primary method.
+
+## Update — 2026-11-16 (follow-up): Sign-in failure diagnosed + "Generate strong password" wizard enhancement
+
+**Problem reported:** After creating a password, the admin got "Sign-in could not be completed. Check your details or try again later."
+
+**Diagnosis:**
+1. The database confirms the account was created (`setup/status` reports `userCount: 1`, setup wizard locked).
+2. The user's typed password in the screenshot is ~13 characters long, while the policy enforced at creation requires ≥14 characters — the typed password does not match the saved password.
+3. The error message was generic and gave no clue about what went wrong.
+
+**Fixes applied:**
+1. Added a **"Generate strong password"** button to the setup wizard that auto-fills both password fields with a policy-compliant random password, reveals it, and adds a **Copy** button — per the knowledge item *"Scripts should automatically set a secure password and provide it to the user upon completion, rather than requiring manual input that could lead to errors."*
+2. Improved login error messages to distinguish `INVALID_CREDENTIALS` (wrong email/password), `ACCOUNT_LOCKED` (rate-limited after repeated failures), `ACCOUNT_DISABLED`, and bad request format.
+3. Added `email.trim()` on both the client side and the server login schema so trailing spaces never break sign-in.
+4. Added 30-sample property test verifying every generated password satisfies server policy rules.
+
+**Recovery path for the user:** because the created password is unknown, delete/rename `portal.db` in Hostinger File Manager to re-show the wizard, then use the "Generate strong password" button and copy the password.

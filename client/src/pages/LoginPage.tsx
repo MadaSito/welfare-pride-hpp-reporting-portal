@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useBranding } from "../contexts/BrandingContext";
-import { Mail, KeyRound, Shield, AlertCircle, CheckCircle, Copy, Check, Eye, EyeOff, Building2, Palette } from "lucide-react";
+import { Mail, KeyRound, Shield, AlertCircle, CheckCircle, Copy, Check, Eye, EyeOff, Building2, Palette, Sparkles } from "lucide-react";
 import QRCode from "qrcode";
 
 // Capture and remove the fragment before the app waits for its initial session check.
@@ -14,6 +14,18 @@ if (isMagicLinkLanding && window.location.hash) {
 }
 
 export function discardPendingMagicLink() { pendingMagicLinkToken = null; }
+
+function generateStrongPassword(): string {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghijkmnopqrstuvwxyz";
+  const digits = "23456789";
+  const specials = "!@#$%^*?";
+  const all = upper + lower + digits + specials;
+  const pick = (chars: string) => chars[Math.floor(Math.random() * chars.length)];
+  const mandatory = [pick(upper), pick(upper), pick(lower), pick(lower), pick(digits), pick(digits), pick(specials), pick(specials), pick(specials)];
+  const rest = Array.from({ length: 11 }, () => pick(all));
+  return mandatory.concat(rest).sort(() => Math.random() - 0.5).join("");
+}
 
 export function LoginPage() {
   const { stage, csrf, login, startMfaEnroll, verifyMfa, changeInitialPassword, refresh, logout } = useAuth();
@@ -30,6 +42,8 @@ export function LoginPage() {
   const [linkMissing, setLinkMissing] = useState(isMagicLinkLanding && !pendingMagicLinkToken);
   const [linkRequested, setLinkRequested] = useState(false);
 
+  const [copiedPass, setCopiedPass] = useState(false);
+  const [generatedInfo, setGeneratedInfo] = useState<string | null>(null);
   // First-run setup state
   const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
   const [setupEmail, setSetupEmail] = useState("");
@@ -177,8 +191,12 @@ export function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      const r = await login(email, password);
-      if (!r.error) setPassword("");
+      const r = await login(email.trim(), password);
+      if (!r.error) { setPassword(""); }
+      else if (r.error === "INVALID_CREDENTIALS") setError("The email or password you entered is incorrect. Passwords are at least 14 characters long and are case-sensitive.");
+      else if (r.error === "ACCOUNT_LOCKED") setError("This account is temporarily locked due to too many failed attempts. Please wait a few minutes and try again.");
+      else if (r.error === "ACCOUNT_DISABLED") setError("This account has been disabled. Contact an administrator.");
+      else if (r.error === "INVALID_CREDENTIALS_PAYLOAD") setError("Please enter a valid email address and password.");
       else setError("Sign-in could not be completed. Check your details or try again later.");
     } catch {
       setError("Sign-in could not be completed. Check your details or try again later.");
@@ -367,6 +385,17 @@ export function LoginPage() {
                   />
                 </div>
                 <p className="text-[11px] text-muted-foreground">14–128 characters with uppercase, lowercase, at least two numbers, and three special characters.</p>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <button type="button" onClick={() => { const pw = generateStrongPassword(); setSetupPassword(pw); setSetupConfirm(pw); setGeneratedInfo(pw); setShowSetupPass(true); setCopiedPass(false); }} className="font-semibold text-[#5A92C9] hover:underline flex items-center gap-1">
+                    <Sparkles size={12} /> Generate strong password
+                  </button>
+                  {generatedInfo && (
+                    <button type="button" onClick={() => { navigator.clipboard?.writeText(generatedInfo); setCopiedPass(true); }} className="text-muted-foreground hover:underline flex items-center gap-1">
+                      {copiedPass ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                      {copiedPass ? "Copied" : "Copy"}
+                    </button>
+                  )}
+                </div>
 
                 <details className="rounded-xl border border-border bg-muted/20 p-3 text-xs">
                   <summary className="cursor-pointer font-semibold text-foreground flex items-center gap-1.5 list-none">

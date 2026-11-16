@@ -172,3 +172,23 @@ describe("first-time setup endpoints", () => {
     expect(res.body.stage).toBe("mfa_enroll");
   });
 });
+
+describe("generated strong passwords", () => {
+  it("satisfies all server policy requirements across multiple samples", async () => {
+    const { validatePassword } = await import("./security");
+    function generateStrongPassword(): string {
+      const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+      const lower = "abcdefghijkmnopqrstuvwxyz";
+      const digits = "23456789";
+      const specials = "!@#$%^*?";
+      const all = upper + lower + digits + specials;
+      const pick = (chars: string) => chars[Math.floor(Math.random() * chars.length)];
+      const mandatory = [pick(upper), pick(upper), pick(lower), pick(lower), pick(digits), pick(digits), pick(specials), pick(specials), pick(specials)];
+      const rest = Array.from({ length: 11 }, () => pick(all));
+      return mandatory.concat(rest).sort(() => Math.random() - 0.5).join("");
+    }
+    for (let i = 0; i < 30; i++) {
+      expect(validatePassword(generateStrongPassword())).toBe(true);
+    }
+  });
+});
