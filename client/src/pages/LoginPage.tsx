@@ -193,7 +193,7 @@ export function LoginPage() {
     try {
       const r = await login(email.trim(), password);
       if (!r.error) { setPassword(""); }
-      else if (r.error === "INVALID_CREDENTIALS") setError("The email or password you entered is incorrect. Passwords are at least 14 characters long and are case-sensitive.");
+      else if (r.error === "INVALID_CREDENTIALS") setError("The email or password you entered is incorrect. Passwords are case-sensitive.");
       else if (r.error === "ACCOUNT_LOCKED") setError("This account is temporarily locked due to too many failed attempts. Please wait a few minutes and try again.");
       else if (r.error === "ACCOUNT_DISABLED") setError("This account has been disabled. Contact an administrator.");
       else if (r.error === "INVALID_CREDENTIALS_PAYLOAD") setError("Please enter a valid email address and password.");
@@ -362,7 +362,6 @@ export function LoginPage() {
                     id="setup-pass"
                     type={showSetupPass ? "text" : "password"}
                     required
-                    minLength={14}
                     value={setupPassword}
                     onChange={e => setSetupPassword(e.target.value)}
                     className="h-11 w-full rounded-xl border border-border bg-background pl-10 pr-10 text-sm focus-ring"
@@ -378,13 +377,12 @@ export function LoginPage() {
                     id="setup-confirm"
                     type={showSetupPass ? "text" : "password"}
                     required
-                    minLength={14}
                     value={setupConfirm}
                     onChange={e => setSetupConfirm(e.target.value)}
                     className="h-11 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm focus-ring"
                   />
                 </div>
-                <p className="text-[11px] text-muted-foreground">14–128 characters with uppercase, lowercase, at least two numbers, and three special characters.</p>
+                <p className="text-[11px] text-muted-foreground">Use any password you prefer. A password generator is included below for convenience.</p>
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                   <button type="button" onClick={() => { const pw = generateStrongPassword(); setSetupPassword(pw); setSetupConfirm(pw); setGeneratedInfo(pw); setShowSetupPass(true); setCopiedPass(false); }} className="font-semibold text-[#5A92C9] hover:underline flex items-center gap-1">
                     <Sparkles size={12} /> Generate strong password
@@ -449,7 +447,6 @@ export function LoginPage() {
             <div className="space-y-5">
               <div className="space-y-2">
                 <h2 className="text-lg font-bold">Sign in to your account</h2>
-                <p className="text-sm leading-6 text-muted-foreground">Local accounts require multi-factor authentication.</p>
               </div>
               {linkMissing && <p role="status" className="rounded-xl border border-border bg-muted/40 p-3 text-sm">This sign-in link is unavailable. Request a new link below.</p>}
               <form onSubmit={onCredSubmit} className="space-y-3">
@@ -481,8 +478,7 @@ export function LoginPage() {
                     {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 </div>
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>14-char policy enforced</span>
+                <div className="flex items-center justify-end text-xs text-muted-foreground">
                   <a href="#recovery" onClick={e => { e.preventDefault(); setError("Contact an administrator to regain access. There is no self-service password reset."); }} className="hover:underline">Forgot password?</a>
                 </div>
                 {error && <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/15 p-3 text-xs text-rose-600 dark:text-rose-300"><AlertCircle size={14} />{error}</div>}

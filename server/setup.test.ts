@@ -93,10 +93,10 @@ describe("first-time setup endpoints", () => {
     expect(res.body.error).toBe("INVALID_SETUP_PAYLOAD");
   });
 
-  it("rejects password that fails the policy (missing special characters)", async () => {
+  it("rejects known-compromised passwords in setup", async () => {
     const res = await req("/api/v1/auth/setup", {
       method: "POST",
-      body: { email: "admin@example.org", password: "PasswordWithNoSpecials12" },
+      body: { email: "admin@example.org", password: "SuperAdmin2026!#W" },
     });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("PASSWORD_POLICY");
@@ -132,7 +132,7 @@ describe("first-time setup endpoints", () => {
     const user = db.prepare("SELECT * FROM users WHERE email = ?").get("admin@example.org") as any;
     expect(user).toBeTruthy();
     expect(user.role).toBe("super_admin");
-    expect(user.mfa_required).toBe(1);
+    expect(user.mfa_required).toBe(0);
     expect(user.must_change_password).toBe(0);
     expect(user.status).toBe("active");
     expect(user.display_name).toBe("First Admin");
@@ -163,13 +163,13 @@ describe("first-time setup endpoints", () => {
     expect(res.body.error).toBe("SETUP_ALREADY_COMPLETED");
   });
 
-  it("the new admin can log in and gets routed to MFA enrollment", async () => {
+  it("the new admin can log in without mandatory MFA enrollment", async () => {
     const res = await req("/api/v1/auth/login", {
       method: "POST",
       body: { email: "admin@example.org", password: STRONG_PW },
     });
     expect(res.status).toBe(200);
-    expect(res.body.stage).toBe("mfa_enroll");
+    expect(res.body.stage).toBe("full");
   });
 });
 
@@ -192,3 +192,24 @@ describe("generated strong passwords", () => {
     }
   });
 });
+
+  it("still routes to MFA when mfa_required is explicitly enabled", async () => {
+    db.prepare("UPDATE users SET mfa_required = 1 WHERE email = ?").run("admin@example.org");
+    const res = await req("/api/v1/auth/login", {
+      method: "POST",
+      body: { email: "admin@example.org", password: STRONG_PW },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.stage).toBe("mfa_enroll");
+  });
+
+  it("completes login with stage full when MFA is not required", async () => {
+    db.prepare("UPDATE users SET mfa_required = 0, mfa_enrolled_at = NULL, mfa_secret_encrypted = NULL WHERE email = ?").run("admin@example.org");
+    const res = await req("/api/v1/auth/login", {
+      method: "POST",
+      body: { email: "admin@example.org", password: STRONG_PW },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.stage).toBe("full");
+    expect(res.body.user).toBeTruthy();
+  });

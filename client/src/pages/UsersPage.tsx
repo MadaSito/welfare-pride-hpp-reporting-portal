@@ -48,7 +48,7 @@ export function UsersPage() {
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [role, setRole] = useState<Role>("manager");
-  const [mfaRequired, setMfaRequired] = useState(true);
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -113,6 +113,14 @@ export function UsersPage() {
     if (res.ok) fetchUsers();
   };
 
+  const toggleMfa = async (id: string, required: boolean) => {
+    const res = await fetch(`/api/v1/admin/users/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      body: JSON.stringify({ mfaRequired: required }),
+    });
+    if (res.ok) { setMessage({ type: "ok", text: required ? "MFA now required for this account." : "MFA is now optional for this account." }); fetchUsers(); }
+  };
   const resetMfa = async (id: string) => {
     if (!confirm("Reset MFA for this user? They will be required to re-enroll at next sign-in.")) return;
     const res = await fetch(`/api/v1/admin/users/${id}/reset-mfa`, {
@@ -203,7 +211,7 @@ export function UsersPage() {
             <button type="submit" className="touch-target px-4 py-2 text-xs font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] focus-ring">
               Create and issue temporary password
             </button>
-            <span className="text-[11px] text-muted-foreground">Passwords meet the 14-character complexity policy automatically.</span>
+            <span className="text-[11px] text-muted-foreground">Generated passwords include letters, numbers, and symbols for security.</span>
           </div>
 
           {tempPassword && (
@@ -298,6 +306,13 @@ export function UsersPage() {
                         <Ban size={13} />
                       </button>
                       <button
+                        onClick={() => toggleMfa(u.id, !u.mfa_required)}
+                        className={`p-1 rounded hover:bg-muted ${u.mfa_required ? "text-amber-500" : "text-muted-foreground hover:text-foreground"}`}
+                        title={u.mfa_required ? "Make MFA optional" : "Require MFA"}
+                      >
+                        <ShieldAlert size={13} />
+                      </button>
+                      <button
                         onClick={() => resetMfa(u.id)}
                         className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
                         title="Reset MFA"
@@ -356,7 +371,7 @@ export function UsersPage() {
       <aside className="rounded-2xl border border-border bg-card p-5 panel-shadow text-xs space-y-2">
         <h3 className="font-bold flex items-center gap-1.5"><HelpCircle size={14} className="text-[#D58240]" /> Enterprise password policy</h3>
         <p className="text-muted-foreground">
-          Local passwords require at least 14 characters, uppercase and lowercase letters, two numbers, and three symbols. Accounts lock for 15 minutes after 5 consecutive failures.
+          Passwords can be any length and complexity you prefer. MFA is optional by default and can be required per account anytime using the shield button in the table. Accounts lock for 15 minutes after 5 consecutive failed sign-in attempts.
         </p>
         <p className="text-[11px] text-muted-foreground font-mono">
           Example compliant format: Correct-Horse-Battery-Staple#99!

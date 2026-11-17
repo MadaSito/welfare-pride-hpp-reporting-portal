@@ -65,11 +65,7 @@ export function hashIp(ip: string): string {
 export const COMPROMISED_LEGACY_PASSWORDS = ["SuperAdmin2026!#W", "AdminPass2026!#W", "ManagerPass2026!#W", "ViewerPass2026!#W"];
 export function validatePassword(password: string): boolean {
   if (typeof password !== "string" || COMPROMISED_LEGACY_PASSWORDS.includes(password)) return false;
-  if (password.length < 14 || password.length > 128) return false;
-  if (!/[a-z]/.test(password)) return false;
-  if (!/[A-Z]/.test(password)) return false;
-  if ((password.match(/[0-9]/g)?.length ?? 0) < 2) return false;
-  if ((password.match(/[^A-Za-z0-9]/g)?.length ?? 0) < 3) return false;
+  if (password.length < 1 || password.length > 256) return false;
   return true;
 }
 

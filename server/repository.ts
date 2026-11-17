@@ -36,7 +36,7 @@ export function runMigrations(): void {
       session_version INTEGER NOT NULL DEFAULT 0,
       auth_provider TEXT NOT NULL DEFAULT 'local',
       sso_id TEXT,
-      mfa_required INTEGER NOT NULL DEFAULT 1,
+      mfa_required INTEGER NOT NULL DEFAULT 0,
       mfa_secret_encrypted TEXT,
       mfa_enrolled_at TEXT,
       mfa_recovery_codes TEXT,
@@ -1078,7 +1078,7 @@ export function bootstrapFirstAdmin(email: string, passwordHash: string): string
     const { count } = db.prepare("SELECT count(*) AS count FROM users").get() as { count: number };
     if (count !== 0) throw new Error("Bootstrap refused: the database already contains users.");
     const tenantId = ensureDefaultTenant();
-    return createUser({ tenantId, email, displayName: "Initial administrator", role: "super_admin", passwordHash, status: "active", mfaRequired: true, mustChangePassword: true });
+    return createUser({ tenantId, email, displayName: "Initial administrator", role: "super_admin", passwordHash, status: "active", mfaRequired: false, mustChangePassword: false });
   }).immediate();
 }
 
@@ -1110,7 +1110,7 @@ export function completeFirstTimeSetup(input: {
       role: "super_admin",
       passwordHash: input.passwordHash,
       status: "active",
-      mfaRequired: true,
+      mfaRequired: false,
       mustChangePassword: false,
     });
     if (input.branding && Object.keys(input.branding).length > 0) {

@@ -51,7 +51,7 @@ afterEach(async () => {
 });
 
 describe("secure bootstrap and first sign-in", () => {
-  it("allows only MFA-verified password rotation and rejects stale sessions", async () => {
+  it("allows password-only first sign-in and rejects stale sessions", async () => {
     const dir = tempDir();
     const nonTerminal = spawnSync("node", ["--import", "tsx", "server/bootstrap-admin.ts", "--email", "first@example.org"], { cwd: process.cwd(), env: { ...process.env, DATA_DIR: dir, SQLITE_PATH: "" }, encoding: "utf8" });
     expect(nonTerminal.status).not.toBe(0);
@@ -62,8 +62,8 @@ describe("secure bootstrap and first sign-in", () => {
     expect(cli(dir).status).not.toBe(0);
     const database = new Database(path.join(dir, "portal.db"));
     const user = database.prepare("SELECT id, password_hash, must_change_password, mfa_required, session_version FROM users").get() as any;
-    expect(user.must_change_password).toBe(1);
-    expect(user.mfa_required).toBe(1);
+    expect(user.must_change_password).toBe(0);
+    expect(user.mfa_required).toBe(0);
     expect(user.password_hash).not.toContain(password);
     expect((database.prepare("SELECT count(*) AS n FROM monthly_metrics").get() as any).n).toBe(0);
     expect((database.prepare("SELECT count(*) AS n FROM reports").get() as any).n).toBe(0);
@@ -82,32 +82,23 @@ describe("secure bootstrap and first sign-in", () => {
     expect((await request("/api/v1/metrics", { cookie: `wp_session=${forgedOldFull}` })).status).toBe(401);
     expect((await request("/api/v1/auth/login", { method: "POST", body: { email: "first@example.org", password }, origin: "https://evil.attacker.test" })).status).toBe(403);
     expect((await request("/api/v1/auth/forgot", { method: "POST", body: { email: "first@example.org" } })).status).toBe(501);
+    // Password-only sign-in: first admin is not forced into MFA enrollment
     const login = await request("/api/v1/auth/login", { method: "POST", body: { email: "first@example.org", password } });
-    expect(login.body.stage).toBe("mfa_enroll");
-    expect((await request("/api/v1/metrics", { cookie: login.cookie })).status).toBe(401);
-    expect((await request("/api/v1/auth/password", { method: "POST", cookie: login.cookie, csrf: login.body.csrf, body: { currentPassword: password, newPassword: "Valid-New-Password#83!" } })).status).toBe(401);
-    expect((await request("/api/v1/auth/mfa/enroll", { method: "POST", cookie: login.cookie })).status).toBe(403);
-    const enroll = await request("/api/v1/auth/mfa/enroll", { method: "POST", cookie: login.cookie, csrf: login.body.csrf });
-    expect(enroll.status).toBe(200);
-    const token = new TOTP({ secret: Secret.fromBase32(enroll.body.manualSecret), digits: 6, period: 30 }).generate();
-    const verified = await request("/api/v1/auth/mfa/verify", { method: "POST", cookie: login.cookie, csrf: login.body.csrf, body: { code: token } });
-    expect(verified.body.stage).toBe("password_change");
-    expect(verified.body.recoveryCodes).toHaveLength(8);
-    expect((await request("/api/v1/metrics", { cookie: verified.cookie })).status).toBe(401);
-    const same = await request("/api/v1/auth/password", { method: "POST", cookie: verified.cookie, csrf: verified.body.csrf, body: { currentPassword: password, newPassword: password } });
+    expect(login.body.stage).toBe("full");
+    expect((await request("/api/v1/metrics", { cookie: login.cookie })).status).toBe(200);
+    // Password change works from the full session
+    const same = await request("/api/v1/auth/password", { method: "POST", cookie: login.cookie, csrf: login.body.csrf, body: { currentPassword: password, newPassword: password } });
     expect(same.body.error).toBe("PASSWORD_MUST_DIFFER");
-    const changed = await request("/api/v1/auth/password", { method: "POST", cookie: verified.cookie, csrf: verified.body.csrf, body: { currentPassword: password, newPassword: "Valid-New-Password#83!" } });
+    const changed = await request("/api/v1/auth/password", { method: "POST", cookie: login.cookie, csrf: login.body.csrf, body: { currentPassword: password, newPassword: "Valid-New-Password#83!" } });
     expect(changed.body.stage).toBe("full");
     expect((await request("/api/v1/metrics", { cookie: changed.cookie })).status).toBe(200);
     expect((await request("/api/v1/metrics", { cookie: `wp_session=${forgedOldFull}` })).status).toBe(401);
-    expect((await request("/api/v1/auth/session", { cookie: verified.cookie })).status).toBe(401);
-    expect((await request("/api/v1/auth/mfa/enroll", { method: "POST", cookie: changed.cookie, csrf: changed.body.csrf })).status).toBe(401);
     expect((await request("/api/v1/admin/backups", { method: "POST", cookie: changed.cookie, csrf: changed.body.csrf })).status).toBe(501);
     expect((await request("/api/v1/admin/backups/restore", { method: "POST", cookie: changed.cookie, csrf: changed.body.csrf })).status).toBe(501);
     expect((await request(`/api/v1/admin/users/${user.id}/convert-sso`, { method: "POST", cookie: changed.cookie, csrf: changed.body.csrf })).status).toBe(501);
     expect((await request("/api/v1/auth/login", { method: "POST", body: { email: "first@example.org", password } })).status).toBe(401);
     const relogin = await request("/api/v1/auth/login", { method: "POST", body: { email: "first@example.org", password: "Valid-New-Password#83!" } });
-    expect(relogin.body.stage).toBe("mfa_verify");
+    expect(relogin.body.stage).toBe("full");
   }, 30000);
 
   it("migrates legacy databases without deleting data and quarantines exposed demo credentials", async () => {
@@ -142,7 +133,7 @@ async function authFixture() {
   const cipher = createCipheriv("aes-256-gcm", Buffer.alloc(32, 42), iv);
   const encrypted = [iv, Buffer.concat([cipher.update(fixtureMfa), cipher.final()]), cipher.getAuthTag()].map(b => b.toString("base64url")).join(".");
   const hash = await hashPassword(fixturePassword);
-  const insert = db.prepare("INSERT INTO users (id,email,display_name,role,status,password_hash,mfa_secret_encrypted,mfa_enrolled_at) VALUES (?,?,?,?,'active',?,?,datetime('now'))");
+  const insert = db.prepare("INSERT INTO users (id,email,display_name,role,status,mfa_required,password_hash,mfa_secret_encrypted,mfa_enrolled_at) VALUES (?,?,?,?,'active',1,?,?,datetime('now'))");
   insert.run("admin", "admin@test.example", "Admin", "super_admin", hash, encrypted);
   insert.run("target", "target@test.example", "Target", "manager", hash, encrypted);
   db.close();
@@ -204,6 +195,9 @@ describe("session revocation and security-state snapshots", () => {
     const full = await f.login();
     const pending = await f.pending();
     expect((await f.request("/api/v1/admin/users/admin", { method: "PATCH", session: admin, body: { role: "super_admin", status: "active", displayName: "Still Admin", mfaRequired: true } })).status).toBe(200);
+    // MFA can be turned off and on freely per user (no forced-MFA rejection)
+    expect((await f.request("/api/v1/admin/users/target", { method: "PATCH", session: admin, body: { mfaRequired: false } })).status).toBe(200);
+    expect((await f.request("/api/v1/admin/users/target", { method: "PATCH", session: admin, body: { mfaRequired: true } })).status).toBe(200);
     await f.check(admin, 200);
     expect((await f.request("/api/v1/admin/users/target", { method: "PATCH", session: admin, body: { role: "view_only" } })).status).toBe(200);
     await f.check(full, 401);
@@ -260,7 +254,7 @@ describe("session revocation and security-state snapshots", () => {
   it("issues a current full session when completing an invited account's enrollment", async () => {
     const f = await authFixture();
     const db = new Database(path.join(f.dir, "portal.db"));
-    db.prepare("UPDATE users SET status = 'invited', mfa_secret_encrypted = NULL, mfa_enrolled_at = NULL WHERE id = 'target'").run();
+    db.prepare("UPDATE users SET status = 'invited', mfa_required = 1, mfa_secret_encrypted = NULL, mfa_enrolled_at = NULL WHERE id = 'target'").run();
     db.close();
     const login = await f.request("/api/v1/auth/login", { method: "POST", body: { email: "target@test.example", password: fixturePassword } });
     const pending = { cookie: login.cookie, csrf: login.body.csrf };

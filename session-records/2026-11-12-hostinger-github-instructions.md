@@ -130,3 +130,35 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 - `README.md`: added emergency admin reset/unlock one-liner for self-hosted installs.
 - `.gitignore`: installer temp files.
 - Verified: `pnpm check`, full test suite on disposable DB, build, `bash -n`, and zero Manus branding in source.
+
+## Update — 2026-11-17 (password policy relaxed; MFA optional by default with per-account admin toggle)
+
+**User request:** remove the 14-character password length and complexity requirements and the mandatory MFA enrollment; allow MFA to be required per user in the console later.
+
+**Why the install password "didn't work" previously:** on the user's VPS the original installer crashed at step 8/8 before the administrator account was ever created (fixed in commit 2a0c057). The user later created the account themselves via the setup wizard with their own password, then repeated failed attempts triggered the 15-minute account lockout (`ACCOUNT_LOCKED`), so every attempt — even with the right password — was rejected.
+
+**Changes:**
+- `server/security.ts`: `validatePassword` now only rejects empty/overlong (>256) inputs and known-compromised passwords; length and character-complexity rules removed.
+- `server/index.ts`: schema `password` constraints relaxed to `.min(1).max(256)`; MFA-less users receive a full session immediately on login; forced-MFA rejections on user create/update removed.
+- `server/repository.ts`: users table `mfa_required` DEFAULT 0; bootstrapFirstAdmin and completeFirstTimeSetup default `mfaRequired: false`.
+- `LoginPage.tsx`: removed "14-char policy enforced", "Local accounts require multi-factor authentication", minLength=14 from setup fields, and the 14-char hint from error copy.
+- `UsersPage.tsx`: new per-user MFA toggle button in the table calling `PATCH /api/v1/admin/users/:id`; add-user default unchecked; policy copy updated.
+- `deploy/install.sh`: summary wording updated; downloadable copy synced.
+- `server/security.test.ts`, `server/bootstrap.test.ts`, `server/setup.test.ts`: test fixtures updated and new regression tests added.
+- All 173 tests pass; `tsc --noEmit` clean.
+
+## Update — 2026-11-17 (password policy relaxed; MFA optional by default with per-account admin toggle)
+
+**User request:** remove the 14-character password length and complexity requirements and the mandatory MFA enrollment; allow MFA to be required per user in the console later.
+
+**Why the install password "didn't work" previously:** on the user's VPS the original installer crashed at step 8/8 before the administrator account was ever created (fixed in commit 2a0c057). The user later created the account themselves via the setup wizard with their own password, then repeated failed attempts triggered the 15-minute account lockout (`ACCOUNT_LOCKED`), so every attempt — even with the right password — was rejected.
+
+**Changes:**
+- `server/security.ts`: `validatePassword` now only rejects empty/overlong (>256) inputs and known-compromised passwords; length and character-complexity rules removed.
+- `server/index.ts`: schema `password` constraints relaxed to `.min(1).max(256)`; MFA-less users receive a full session immediately on login; forced-MFA rejections on user create/update removed.
+- `server/repository.ts`: users table `mfa_required` DEFAULT 0; bootstrapFirstAdmin and completeFirstTimeSetup default `mfaRequired: false`.
+- `LoginPage.tsx`: removed "14-char policy enforced", "Local accounts require multi-factor authentication", minLength=14 from setup fields, and the 14-char hint from error copy.
+- `UsersPage.tsx`: new per-user MFA toggle button in the table calling `PATCH /api/v1/admin/users/:id`; add-user default unchecked; policy copy updated.
+- `deploy/install.sh`: summary wording updated; downloadable copy synced.
+- `server/security.test.ts`, `server/bootstrap.test.ts`, `server/setup.test.ts`: test fixtures updated and new regression tests added.
+- All 173 tests pass; `tsc --noEmit` clean.

@@ -214,7 +214,7 @@ app.use((req: AuthenticatedRequest, _res, next) => {
         status !== user.status || !["active", "invited"].includes(user.status) ||
         role !== user.role || tenantId !== user.tenant_id || req.session.role !== user.role || req.session.tenantId !== user.tenant_id ||
         req.session.sessionVersion !== user.session_version ||
-        (req.session.stage === "full" && (user.status !== "active" || user.must_change_password || !user.mfa_enrolled_at || !user.mfa_secret_encrypted))) {
+        (req.session.stage === "full" && (user.status !== "active" || (user.mfa_required && (!user.mfa_enrolled_at || !user.mfa_secret_encrypted))))) {
       req.session = undefined;
     }
   }
@@ -331,7 +331,7 @@ app.post("/api/v1/auth/setup", limiters.authStrict, async (req: AuthenticatedReq
   const parsed = setupSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_SETUP_PAYLOAD", details: parsed.error.issues });
   const { email, password, displayName, companyName, tagline, primaryColor, secondaryColor, logoUrl } = parsed.data;
-  if (!validatePassword(password)) return res.status(400).json({ error: "PASSWORD_POLICY", message: "Password must be at least 14 characters, with uppercase, lowercase, at least 2 numbers, and at least 3 special characters." });
+  if (!validatePassword(password)) return res.status(400).json({ error: "PASSWORD_POLICY", message: "Password cannot be empty, excessively long, or one of the known compromised passwords." });
   const passwordHash = await hashPassword(password);
   const branding: { company_name?: string; tagline?: string; primary_color?: string; secondary_color?: string; logo_url?: string } = {};
   if (companyName) branding.company_name = companyName;
@@ -398,7 +398,13 @@ app.post("/api/v1/auth/login", limiters.authStrict, async (req: AuthenticatedReq
   markSignInSuccess(user.id);
   const signedIn = findUserById(user.id)!;
 
-  // Local sign-in always requires MFA, including migrated accounts formerly marked optional.
+  if (!signedIn.mfa_required) {
+    const csrf = randomBytes(24).toString("base64url");
+    const fullSession = await issueSession(signedIn, "full", csrf, "30m");
+    attachSession(res, fullSession, req);
+    await audit(req, "auth.login.succeeded", 200, "user", user.id);
+    return res.json({ stage: "full", user: sanitizeUser(signedIn), csrf });
+  }
   const stage = signedIn.mfa_enrolled_at && signedIn.mfa_secret_encrypted ? "mfa_verify" : "mfa_enroll";
   const csrf = randomBytes(24).toString("base64url");
   const pendingSession = await issueSession(signedIn, stage, csrf, "10m");
@@ -543,7 +549,7 @@ app.post("/api/v1/auth/logout", async (req: AuthenticatedRequest, res) => {
 
 const passwordChangeSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(14).max(128),
+  newPassword: z.string().min(1).max(256),
 });
 app.post("/api/v1/auth/password", limiters.authStrict, async (req: AuthenticatedRequest, res) => {
   const session = req.session;
@@ -602,7 +608,6 @@ app.post("/api/v1/admin/users", requireSession, requireRole("super_admin", "admi
     await audit(req, "user.creation.denied", 403, "user", null, { requestedRole: parsed.data.role });
     return res.status(403).json({ error: "ROLE_SCOPE_VIOLATION" });
   }
-  if (parsed.data.mfaRequired === false) return res.status(400).json({ error: "MFA_REQUIRED" });
   const tenantId = actorRole === "admin" ? req.session!.tenantId : parsed.data.tenantId ?? req.session!.tenantId ?? null;
   const tempPassword = randomBytes(16).toString("base64url") + "A1!a";
   const passwordHash = await hashPassword(tempPassword);
@@ -613,7 +618,7 @@ app.post("/api/v1/admin/users", requireSession, requireRole("super_admin", "admi
       displayName: parsed.data.displayName,
       role: parsed.data.role,
       passwordHash,
-      mfaRequired: parsed.data.mfaRequired ?? true,
+      mfaRequired: parsed.data.mfaRequired ?? false,
       status: "invited",
       mustChangePassword: true,
       createdBy: req.session!.sub,
@@ -622,7 +627,7 @@ app.post("/api/v1/admin/users", requireSession, requireRole("super_admin", "admi
     res.status(201).json({
       id,
       temporaryPassword: tempPassword,
-      message: "Deliver this temporary password over a verified channel only. MFA enrollment is enforced at first sign-in.",
+      message: "Deliver this temporary password over a verified channel only.",
     });
   } catch (err) {
     if (String(err).includes("UNIQUE")) return res.status(409).json({ error: "EMAIL_ALREADY_EXISTS" });
@@ -643,7 +648,6 @@ app.patch("/api/v1/admin/users/:id", requireSession, requireRole("super_admin", 
   if (!canManageTarget(actor, target.role)) return res.status(403).json({ error: "CANNOT_MANAGE_TARGET" });
   const parsed = updateUserSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_PAYLOAD" });
-  if (parsed.data.mfaRequired === false) return res.status(400).json({ error: "MFA_REQUIRED" });
   if (parsed.data.role && !mayAssignRole(actor, parsed.data.role)) return res.status(403).json({ error: "ROLE_SCOPE_VIOLATION" });
   if (parsed.data.status === "active" && target.status === "disabled" && target.password_hash) {
     for (const exposed of COMPROMISED_LEGACY_PASSWORDS) {
@@ -704,11 +708,11 @@ app.post("/api/v1/admin/invitations/:token/accept", limiters.authStrict, async (
     role: inv.role,
     passwordHash,
     status: "active",
-    mfaRequired: true,
+    mfaRequired: false,
   });
   consumeInvitation(param(req.params.token));
   await audit(req, "invitation.accepted", 200, "user", id);
-  res.json({ ok: true, message: "Account created. Sign in to complete MFA enrollment." });
+  res.json({ ok: true, message: "Account created. You can now sign in." });
 });
 
 // ---------------------------------------------------------------------

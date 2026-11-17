@@ -40,13 +40,14 @@ describe("super admin isolation", () => {
 });
 
 describe("password policy", () => {
-  it("rejects weak passwords", () => {
-    expect(validatePassword("short")).toBe(false);
-    expect(validatePassword("nouppercase12!!")).toBe(false);
-    expect(validatePassword("NOLOWERCASE12!!")).toBe(false);
-    expect(validatePassword("NoSymbolsNumber1234")).toBe(false);
+  it("rejects empty, overlong, and known-compromised passwords", () => {
+    expect(validatePassword("")).toBe(false);
+    expect(validatePassword("a".repeat(257))).toBe(false);
+    expect(validatePassword("SuperAdmin2026!#W")).toBe(false);
   });
-  it("accepts complex passwords meeting all rules", () => {
+  it("accepts passwords of any length without forced complexity rules", () => {
+    expect(validatePassword("short")).toBe(true);
+    expect(validatePassword("nouppercase12!!")).toBe(true);
     expect(validatePassword("Correct-Horse-Battery-Staple#99!")).toBe(true);
   });
 });
