@@ -63,6 +63,21 @@ curl -fsSL https://raw.githubusercontent.com/MadaSito/welfare-pride-hpp-reportin
 
 Or clone first: `git clone https://github.com/MadaSito/welfare-pride-hpp-reporting-portal.git && cd welfare-pride-hpp-reporting-portal && sudo ./deploy/install.sh`. Non-interactive flags: `--method=vps --domain=beacon.welfarepride.org --email=admin@welfarepride.org`. The installer generates strong random secrets (`APP_SESSION_SECRET`, `APP_ENCRYPTION_KEY`, and a policy-compliant admin password) automatically, so no manual password entry is required.
 
+**Reset or unlock an administrator** (if credentials are lost):
+
+```bash
+sudo -u portal bash -c 'set -a; source /opt/welfare-pride-portal/.env; set +a; cd /opt/welfare-pride-portal; node --import tsx - << "NODE"
+(async () => {
+  const { updatePassword, db } = await import("./server/repository.js");
+  const { hashPassword } = await import("./server/security.js");
+  const u = db.prepare("SELECT * FROM users ORDER BY created_at LIMIT 1").get();
+  const hash = await hashPassword("SetYourPasswordHere!2026");
+  updatePassword(u.id, hash);
+  console.log("Account unlocked + password reset for:", u.email);
+})();
+NODE'
+```
+
 ## Repository and checks
 
 The repository is [MadaSito/welfare-pride-hpp-reporting-portal](https://github.com/MadaSito/welfare-pride-hpp-reporting-portal); access requires permission to the private repository.

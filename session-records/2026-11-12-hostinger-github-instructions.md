@@ -120,3 +120,13 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 - Live JS asset `index-ftioeFFq.js` matches latest build — latest code is already deployed.
 
 **Conclusion:** The account exists and is locked after 5 failed attempts. The previous in-place reset one-liner threw a SyntaxError because piped scripts run as CommonJS (`await is only valid in async functions`). Provided a tested, async-IIFE-wrapped one-liner that unlocks and resets the first user's password in one command.
+
+## Update — 2026-11-17 (installer hardened for reliable fresh-VPS redeployment)
+
+**Issue fixed:** Original `deploy/install.sh` crashed at step 8/8 (`Value is none of these types 'String', 'TypedArray<u8>'`) because piped nested heredocs dropped `BOOT_PWD`. The account was never created, leaving users unable to sign in with their own passwords (which additionally hit the 15-minute account lockout after repeated failed attempts).
+
+**Changes in this update:**
+- `deploy/install.sh`: method alias `baremetal`→`vps`; temporary `.bootstrap-admin.mjs` helper with `find_node` discovery across system/NodeSource/nvm paths; Docker method now uses the same credential-consistent pattern; Docker `.env` includes `VITE_APP_ID=readypackets`; non-interactive `--url=` flag for hostinger check; post-install DB verification that the super_admin row exists with a clear `OK` confirmation; cleaner summary box; removed stale hardcoded asset check.
+- `README.md`: added emergency admin reset/unlock one-liner for self-hosted installs.
+- `.gitignore`: installer temp files.
+- Verified: `pnpm check`, full test suite on disposable DB, build, `bash -n`, and zero Manus branding in source.

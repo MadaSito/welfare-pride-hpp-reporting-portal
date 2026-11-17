@@ -115,3 +115,7 @@ temp/
 data/*.db*
 data/backups/
 .user_env
+
+# Installer temp files
+.bootstrap-admin.*
+.test-env
