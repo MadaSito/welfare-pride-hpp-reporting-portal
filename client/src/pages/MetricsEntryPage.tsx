@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Link } from "wouter";
 import { useAuth } from "../contexts/AuthContext";
+import { apiJson, errorText } from "../lib/api";
 import {
   Save,
   CheckCircle,
@@ -102,16 +103,15 @@ export function MetricsEntryPage() {
     setSaving(true);
     setMessage(null);
     try {
-      const res = await fetch(`/api/v1/metrics/${form.reporting_year}/${form.reporting_month}`, {
+      const data = await apiJson<{ kpis?: { totalCalls?: number } }>(`/api/v1/metrics/${form.reporting_year}/${form.reporting_month}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
+        csrf,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Save failed");
       setMessage({ type: "ok", text: `Saved ${FULL_MONTHS[form.reporting_month - 1]} ${form.reporting_year}: ${data.kpis?.totalCalls?.toLocaleString() || ""} total calls recorded.` });
     } catch (err) {
-      setMessage({ type: "err", text: String(err) });
+      setMessage({ type: "err", text: errorText(err) });
     } finally {
       setSaving(false);
     }

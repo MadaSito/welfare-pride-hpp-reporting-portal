@@ -162,3 +162,16 @@ An isolated clean archive of commit `bf09c00` installed with pnpm 10.4.1, built 
 - `deploy/install.sh`: summary wording updated; downloadable copy synced.
 - `server/security.test.ts`, `server/bootstrap.test.ts`, `server/setup.test.ts`: test fixtures updated and new regression tests added.
 - All 173 tests pass; `tsc --noEmit` clean.
+
+## Update — 2026-11-18 ("TypeError: Failed to fetch" when saving metrics — diagnosed and documented)
+
+**Symptom:** Saving February 2026 metrics showed a red banner `TypeError: Failed to fetch`.
+
+**Diagnosis (root cause):** `https://beacon.welfarepride.org` was returning HTTP 308 (permanent redirect) *to itself*, creating an infinite redirect loop. The response had `server: cloudflare`, `cf-cache-status: DYNAMIC` and a `Location: https://beacon.welfarepride.org/…` header. This is the textbook Cloudflare **Flexible-SSL** loop: Cloudflare connects to the origin over HTTP (port 80), the origin redirects HTTP→HTTPS, Cloudflare returns that redirect to the browser even though the visitor is already on HTTPS. The browser's `fetch()` cannot complete the POST through the loop and throws `TypeError: Failed to fetch`.
+
+**Fix (user action required, no code change can override DNS/CDN):**
+1. Cloudflare Dashboard → **SSL/TLS → set encryption mode to "Full"** (or "Full (strict)").
+2. Cloudflare Dashboard → **DNS → Records**: verify the `A` record for `beacon` points to the *current* server IP (DigitalOcean VPS, not the old Hostinger IP `88.223.84.93`).
+3. Cloudflare Dashboard → **Rules → Page Rules / Redirect Rules**: ensure no rule redirects `beacon.welfarepride.org` onto itself.
+
+**App-side hardening:** `client/src/lib/api.ts` `apiJson`/`errorText` replaces raw `TypeError: Failed to fetch` with a friendly "Could not reach the server" message; MetricsEntryPage updated; TypeScript check and all 173 tests pass.
