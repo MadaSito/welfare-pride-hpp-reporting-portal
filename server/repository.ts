@@ -273,6 +273,15 @@ export function runMigrations(): void {
     }
     db.exec("CREATE TABLE IF NOT EXISTS security_migrations (name TEXT PRIMARY KEY)");
   })();
+  // Add fields without importing/seeding months or overwriting existing counts.
+  // NULL independent totals mark legacy rows that still use derived totals;
+  // an explicit zero entered through the new form remains an explicit zero.
+  db.transaction(() => {
+    const metricColumns = db.prepare("PRAGMA table_info(monthly_metrics)").all() as { name: string }[];
+    if (!metricColumns.some(c => c.name === "total_calls")) db.exec("ALTER TABLE monthly_metrics ADD COLUMN total_calls INTEGER CHECK (total_calls IS NULL OR total_calls >= 0)");
+    if (!metricColumns.some(c => c.name === "members_reached")) db.exec("ALTER TABLE monthly_metrics ADD COLUMN members_reached INTEGER NOT NULL DEFAULT 0 CHECK (members_reached >= 0)");
+    if (!metricColumns.some(c => c.name === "referrals")) db.exec("ALTER TABLE monthly_metrics ADD COLUMN referrals INTEGER CHECK (referrals IS NULL OR referrals >= 0)");
+  }).immediate();
   // Seed configuration singletons only; never seed accounts or sample records.
   db.exec(`
     INSERT OR IGNORE INTO email_config (id) VALUES (1);
@@ -517,13 +526,16 @@ export function consumePasswordReset(token: string): void {
 }
 
 // ---------------------------------------------------------------------
-// Monthly Metrics (the exact 9 fields + month + year)
+// Monthly metrics: seven primary reporting fields plus legacy supplemental data.
 // ---------------------------------------------------------------------
 export type MonthlyMetric = {
   id: string;
   tenant_id: string | null;
   reporting_month: number;
   reporting_year: number;
+  total_calls: number | null;
+  members_reached: number;
+  referrals: number | null;
   calls_round1: number;
   calls_round2: number;
   calls_round3: number;
@@ -541,6 +553,7 @@ export type MonthlyMetric = {
 
 export type ComputedKpi = {
   totalCalls: number;
+  membersReached: number;
   round1Rate: number;
   round2Rate: number;
   round3Rate: number;
@@ -553,11 +566,13 @@ export type ComputedKpi = {
 };
 
 export function computeKpis(m: MonthlyMetric): ComputedKpi {
-  const totalCalls = m.calls_round1 + m.calls_round2 + m.calls_round3;
+  const totalCalls = m.total_calls ?? (m.calls_round1 + m.calls_round2 + m.calls_round3);
   const totalAca = m.aca_yes + m.aca_no;
-  const totalReferrals = m.calls_jhpp + m.calls_wr;
+  const destinationReferrals = m.calls_jhpp + m.calls_wr;
+  const totalReferrals = m.referrals ?? destinationReferrals;
   return {
     totalCalls,
+    membersReached: m.members_reached ?? 0,
     round1Rate: totalCalls ? Math.round((m.calls_round1 / totalCalls) * 1000) / 10 : 0,
     round2Rate: totalCalls ? Math.round((m.calls_round2 / totalCalls) * 1000) / 10 : 0,
     round3Rate: totalCalls ? Math.round((m.calls_round3 / totalCalls) * 1000) / 10 : 0,
@@ -565,8 +580,8 @@ export function computeKpis(m: MonthlyMetric): ComputedKpi {
     acaRate: totalAca ? Math.round((m.aca_yes / totalAca) * 1000) / 10 : 0,
     callsPerStaff: m.staff_members ? Math.round((totalCalls / m.staff_members) * 10) / 10 : 0,
     totalReferrals,
-    jhppShare: totalReferrals ? Math.round((m.calls_jhpp / totalReferrals) * 1000) / 10 : 0,
-    wrShare: totalReferrals ? Math.round((m.calls_wr / totalReferrals) * 1000) / 10 : 0,
+    jhppShare: destinationReferrals ? Math.round((m.calls_jhpp / destinationReferrals) * 1000) / 10 : 0,
+    wrShare: destinationReferrals ? Math.round((m.calls_wr / destinationReferrals) * 1000) / 10 : 0,
   };
 }
 
@@ -588,6 +603,9 @@ export function upsertMonthlyMetric(input: {
   tenantId: string | null;
   reporting_month: number;
   reporting_year: number;
+  total_calls?: number;
+  members_reached?: number;
+  referrals?: number;
   calls_round1: number;
   calls_round2: number;
   calls_round3: number;
@@ -600,11 +618,23 @@ export function upsertMonthlyMetric(input: {
   notes?: string | null;
   entered_by?: string | null;
 }): MonthlyMetric {
+  for (const value of [input.total_calls, input.members_reached, input.referrals]) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error("INVALID_MONTHLY_COUNT");
+  }
+  const existing = findMonthlyMetric(input.reporting_year, input.reporting_month, input.tenantId);
+  // Old clients may omit the new fields. Preserve existing values rather than
+  // replacing a saved independent count with a newly derived value or zero.
+  const totalCalls = input.total_calls ?? existing?.total_calls ?? null;
+  const membersReached = input.members_reached ?? existing?.members_reached ?? 0;
+  const referrals = input.referrals ?? existing?.referrals ?? null;
   const id = randomUUID();
   db.prepare(`
-    INSERT INTO monthly_metrics (id, tenant_id, reporting_month, reporting_year, calls_round1, calls_round2, calls_round3, aca_yes, aca_no, head_of_household, staff_members, calls_jhpp, calls_wr, notes, entered_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO monthly_metrics (id, tenant_id, reporting_month, reporting_year, calls_round1, calls_round2, calls_round3, aca_yes, aca_no, head_of_household, staff_members, calls_jhpp, calls_wr, notes, entered_by, total_calls, members_reached, referrals)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(tenant_id, reporting_year, reporting_month) DO UPDATE SET
+      total_calls = excluded.total_calls,
+      members_reached = excluded.members_reached,
+      referrals = excluded.referrals,
       calls_round1 = excluded.calls_round1,
       calls_round2 = excluded.calls_round2,
       calls_round3 = excluded.calls_round3,
@@ -633,6 +663,9 @@ export function upsertMonthlyMetric(input: {
     Math.max(0, input.calls_wr || 0),
     input.notes ?? null,
     input.entered_by ?? null,
+    totalCalls,
+    membersReached,
+    referrals,
   );
   return db.prepare(`SELECT * FROM monthly_metrics WHERE reporting_year = ? AND reporting_month = ? AND (tenant_id = ? OR (tenant_id IS NULL AND ? IS NULL)) LIMIT 1`).get(input.reporting_year, input.reporting_month, input.tenantId, input.tenantId) as MonthlyMetric;
 }

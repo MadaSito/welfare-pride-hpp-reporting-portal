@@ -5,7 +5,7 @@ import { createCipheriv, createDecipheriv, createHash, pbkdf2Sync, randomBytes }
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { db, listMonthlyMetrics, upsertMonthlyMetric, listAuditEvents, getEmailConfig, updateEmailConfig, getSiemConfig, updateSiemConfig, getEntraConfig, updateEntraConfig, getBrandConfig, updateBrandConfig, listIpRules, addIpRule, registerBackup, listBackups, deleteBackupRecord } from "./repository";
+import { db, computeKpis, listMonthlyMetrics, upsertMonthlyMetric, listAuditEvents, getEmailConfig, updateEmailConfig, getSiemConfig, updateSiemConfig, getEntraConfig, updateEntraConfig, getBrandConfig, updateBrandConfig, listIpRules, addIpRule, registerBackup, listBackups, deleteBackupRecord } from "./repository";
 import { writeLog } from "./logging";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -86,13 +86,16 @@ export function exportMetricsCsv(year?: number): string {
   const out = rows.map(r => ({
     "Reporting Year": safeCell(r.reporting_year),
     "Reporting Month": safeCell(r.reporting_month),
-    "Calls round 1": safeCell(r.calls_round1),
-    "Calls round 2": safeCell(r.calls_round2),
-    "Calls round 3": safeCell(r.calls_round3),
+    "Total Number of Calls": safeCell(computeKpis(r).totalCalls),
+    "Total number of members REACHED": safeCell(computeKpis(r).membersReached),
+    "Number of Referrals": safeCell(computeKpis(r).totalReferrals),
+    "1st Round Completed Calls": safeCell(r.calls_round1),
+    "2nd Round Completed Calls": safeCell(r.calls_round2),
+    "3rd Round Completed Calls": safeCell(r.calls_round3),
     "ACA YES": safeCell(r.aca_yes),
     "ACA No": safeCell(r.aca_no),
     "Head of Household": safeCell(r.head_of_household),
-    "Staff members making calls": safeCell(r.staff_members),
+    "Number of staff making the calls": safeCell(r.staff_members),
     "Calls referred to JHPP": safeCell(r.calls_jhpp),
     "Calls referred to WR": safeCell(r.calls_wr),
     "Notes": safeCell(r.notes || ""),
@@ -110,17 +113,27 @@ export function importMetricsCsv(csvText: string, enteredBy?: string): { importe
     if (!year || year < 2000 || year > 2100) { errors.push({ row: i + 2, error: "Invalid reporting year" }); return; }
     if (!month || month < 1 || month > 12) { errors.push({ row: i + 2, error: "Invalid reporting month (1-12)" }); return; }
     try {
+      const independentCount = (header: string, key: string) => {
+        const raw = r[header] ?? r[key];
+        if (raw === undefined) return undefined;
+        if (raw.trim() === "") return 0;
+        if (!/^\d+$/.test(raw.trim())) throw new Error("INVALID_MONTHLY_COUNT");
+        return Number(raw.trim());
+      };
       upsertMonthlyMetric({
         tenantId: null,
         reporting_year: year,
         reporting_month: month,
-        calls_round1: Math.max(0, Number(r["Calls round 1"] ?? r["calls_round1"]) || 0),
-        calls_round2: Math.max(0, Number(r["Calls round 2"] ?? r["calls_round2"]) || 0),
-        calls_round3: Math.max(0, Number(r["Calls round 3"] ?? r["calls_round3"]) || 0),
+        total_calls: independentCount("Total Number of Calls", "total_calls"),
+        members_reached: independentCount("Total number of members REACHED", "members_reached"),
+        referrals: independentCount("Number of Referrals", "referrals"),
+        calls_round1: Math.max(0, Number(r["1st Round Completed Calls"] ?? r["Calls round 1"] ?? r["calls_round1"]) || 0),
+        calls_round2: Math.max(0, Number(r["2nd Round Completed Calls"] ?? r["Calls round 2"] ?? r["calls_round2"]) || 0),
+        calls_round3: Math.max(0, Number(r["3rd Round Completed Calls"] ?? r["Calls round 3"] ?? r["calls_round3"]) || 0),
         aca_yes: Math.max(0, Number(r["ACA YES"] ?? r["aca_yes"]) || 0),
         aca_no: Math.max(0, Number(r["ACA No"] ?? r["aca_no"]) || 0),
         head_of_household: Math.max(0, Number(r["Head of Household"] ?? r["head_of_household"]) || 0),
-        staff_members: Math.max(0, Number(r["Staff members making calls"] ?? r["staff_members"]) || 0),
+        staff_members: Math.max(0, Number(r["Number of staff making the calls"] ?? r["Staff members making calls"] ?? r["staff_members"]) || 0),
         calls_jhpp: Math.max(0, Number(r["Calls referred to JHPP"] ?? r["calls_jhpp"]) || 0),
         calls_wr: Math.max(0, Number(r["Calls referred to WR"] ?? r["calls_wr"]) || 0),
         notes: (r["Notes"] ?? r["notes"] ?? "").slice(0, 1000) || null,

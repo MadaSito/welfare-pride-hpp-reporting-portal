@@ -31,8 +31,34 @@ import {
   Cell,
 } from "recharts";
 
-const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const FULL_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONTH_NAMES = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+const FULL_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 
 interface MonthSeries {
   month: number;
@@ -41,6 +67,7 @@ interface MonthSeries {
   round2: number;
   round3: number;
   totalCalls: number;
+  membersReached: number;
   acaYes: number;
   acaNo: number;
   acaRate: number;
@@ -57,6 +84,9 @@ interface SummaryData {
   monthsWithData: number;
   totals: {
     totalCalls: number;
+    total_calls: number;
+    members_reached: number;
+    referrals: number;
     calls_round1: number;
     calls_round2: number;
     calls_round3: number;
@@ -77,14 +107,21 @@ interface SummaryData {
     wrShare: number;
   };
   monthlySeries: MonthSeries[];
-  latestDelta: { month: number; totalCallsPct: number; acaRateDelta: number; referralsPct: number } | null;
+  latestDelta: {
+    month: number;
+    totalCallsPct: number;
+    acaRateDelta: number;
+    referralsPct: number;
+  } | null;
 }
 
 export function DashboardPage() {
   const { isViewOnly, canEdit } = useAuth();
   const [data, setData] = useState<SummaryData | null>(null);
   const [years, setYears] = useState<number[]>([]);
-  const [selectedYear, setSelectedYear] = useState<number>(new Date().getUTCFullYear());
+  const [selectedYear, setSelectedYear] = useState<number>(
+    new Date().getUTCFullYear()
+  );
   const [monthFilter, setMonthFilter] = useState<number | "all">("all");
   const [loading, setLoading] = useState(true);
 
@@ -105,7 +142,9 @@ export function DashboardPage() {
     }
   };
 
-  useEffect(() => { fetchData(selectedYear); }, [selectedYear]);
+  useEffect(() => {
+    fetchData(selectedYear);
+  }, [selectedYear]);
 
   const series = data?.monthlySeries || [];
   const displayedSeries = useMemo(() => {
@@ -120,18 +159,33 @@ export function DashboardPage() {
     if (!data) return null;
     if (monthFilter === "all") return data.totals;
     const m = series.find(s => s.month === monthFilter);
-    if (!m) return data.totals;
-    const totalCalls = m.round1 + m.round2 + m.round3;
+    if (!m) {
+      // An unreported month has no counts; do not show the full-year totals.
+      return Object.fromEntries(
+        Object.keys(data.totals).map(key => [key, 0])
+      ) as SummaryData["totals"];
+    }
+    const totalCalls = m.totalCalls;
     const totalAca = m.acaYes + m.acaNo;
-    const totalReferrals = m.jhpp + m.wr;
+    const totalReferrals = m.referrals;
+    const destinationCalls = m.jhpp + m.wr;
     return {
       totalCalls,
+      total_calls: totalCalls,
+      members_reached: m.membersReached,
+      referrals: totalReferrals,
       calls_round1: m.round1,
       calls_round2: m.round2,
       calls_round3: m.round3,
-      round1Rate: totalCalls ? Math.round((m.round1 / totalCalls) * 1000) / 10 : 0,
-      round2Rate: totalCalls ? Math.round((m.round2 / totalCalls) * 1000) / 10 : 0,
-      round3Rate: totalCalls ? Math.round((m.round3 / totalCalls) * 1000) / 10 : 0,
+      round1Rate: totalCalls
+        ? Math.round((m.round1 / totalCalls) * 1000) / 10
+        : 0,
+      round2Rate: totalCalls
+        ? Math.round((m.round2 / totalCalls) * 1000) / 10
+        : 0,
+      round3Rate: totalCalls
+        ? Math.round((m.round3 / totalCalls) * 1000) / 10
+        : 0,
       totalAca,
       aca_yes: m.acaYes,
       aca_no: m.acaNo,
@@ -142,8 +196,12 @@ export function DashboardPage() {
       totalReferrals,
       calls_jhpp: m.jhpp,
       calls_wr: m.wr,
-      jhppShare: totalReferrals ? Math.round((m.jhpp / totalReferrals) * 1000) / 10 : 0,
-      wrShare: totalReferrals ? Math.round((m.wr / totalReferrals) * 1000) / 10 : 0,
+      jhppShare: destinationCalls
+        ? Math.round((m.jhpp / destinationCalls) * 1000) / 10
+        : 0,
+      wrShare: destinationCalls
+        ? Math.round((m.wr / destinationCalls) * 1000) / 10
+        : 0,
     };
   }, [data, monthFilter, series]);
 
@@ -164,13 +222,16 @@ export function DashboardPage() {
   }, [viewTotals]);
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6">
       {/* Hero row */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">HPP Outreach Performance</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
+            HPP Outreach Performance
+          </h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
-            Manual outreach metrics tracked by call round, ACA disposition, households, staffing, and referral destinations.
+            Monthly calls, members reached, referrals, staffing, and completed
+            rounds — with optional legacy outreach details.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -180,11 +241,18 @@ export function DashboardPage() {
             <select
               value={selectedYear}
               onChange={e => setSelectedYear(Number(e.target.value))}
+              aria-label="Reporting year"
               className="px-2.5 py-1.5 rounded-xl border border-border bg-card text-foreground font-semibold focus-ring"
             >
-              {Array.from(new Set([selectedYear, ...years, new Date().getUTCFullYear()])).sort((a, b) => b - a).map(y => (
-                <option key={y} value={y}>{y}</option>
-              ))}
+              {Array.from(
+                new Set([selectedYear, ...years, new Date().getUTCFullYear()])
+              )
+                .sort((a, b) => b - a)
+                .map(y => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
             </select>
           </div>
           <button
@@ -216,6 +284,7 @@ export function DashboardPage() {
       <div className="flex items-center gap-1 overflow-x-auto pb-1 text-xs">
         <button
           onClick={() => setMonthFilter("all")}
+          aria-pressed={monthFilter === "all"}
           className={`px-3 py-1 rounded-full font-semibold whitespace-nowrap focus-ring ${monthFilter === "all" ? "bg-[#5A92C9] text-white" : "bg-card border border-border text-muted-foreground hover:text-foreground"}`}
         >
           All months
@@ -224,6 +293,7 @@ export function DashboardPage() {
           <button
             key={m}
             onClick={() => setMonthFilter(i + 1)}
+            aria-pressed={monthFilter === i + 1}
             className={`px-3 py-1 rounded-full font-semibold whitespace-nowrap focus-ring ${monthFilter === i + 1 ? "bg-[#5A92C9] text-white" : "bg-card border border-border text-muted-foreground hover:text-foreground"}`}
           >
             {m}
@@ -231,25 +301,71 @@ export function DashboardPage() {
         ))}
       </div>
 
-      {/* KPI Cards — the 9 exact manual metrics + computed rates */}
-      <section aria-label="Key performance indicators" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+      {/* Seven primary monthly fields plus retained legacy details. */}
+      <section
+        aria-label="Key performance indicators"
+        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+      >
         <MetricCard
-          title="Calls Completed - 1st Round"
+          title="Total Number of Calls"
+          value={viewTotals?.totalCalls ?? "—"}
+          subtitle={`Independent total (${displayedSeries.length} month${displayedSeries.length === 1 ? "" : "s"})`}
+          delta={
+            monthFilter === "all" && data?.latestDelta
+              ? {
+                  value: data.latestDelta.totalCallsPct,
+                  label: "vs prior month",
+                }
+              : undefined
+          }
+          icon={<Award size={20} />}
+          tone="blue"
+        />
+        <MetricCard
+          title="Total number of members REACHED"
+          value={viewTotals?.members_reached ?? "—"}
+          subtitle="Members reached as reported"
+          icon={<Users2 size={20} />}
+          tone="green"
+        />
+        <MetricCard
+          title="Number of Referrals"
+          value={viewTotals?.totalReferrals ?? "—"}
+          subtitle="Independent total, not a destination sum"
+          delta={
+            monthFilter === "all" && data?.latestDelta
+              ? {
+                  value: data.latestDelta.referralsPct,
+                  label: "vs prior month",
+                }
+              : undefined
+          }
+          icon={<Share2 size={20} />}
+          tone="amber"
+        />
+        <MetricCard
+          title="Number of staff making the calls"
+          value={viewTotals?.staff_members ?? "—"}
+          subtitle={`${viewTotals?.callsPerStaff ?? 0} calls per staff member`}
+          icon={<UserCheck size={20} />}
+          tone="purple"
+        />
+        <MetricCard
+          title="1st Round Completed Calls"
           value={viewTotals?.calls_round1 ?? "—"}
           subtitle={`${viewTotals?.round1Rate ?? 0}% of all call volume`}
-          delta={monthFilter === "all" && data?.latestDelta ? { value: data.latestDelta.totalCallsPct, label: "vs prior month" } : undefined}
           icon={<PhoneCall size={20} />}
           tone="blue"
         />
         <MetricCard
-          title="Calls Completed - 2nd Round"
+          title="2nd Round Completed Calls"
           value={viewTotals?.calls_round2 ?? "—"}
           subtitle={`${viewTotals?.round2Rate ?? 0}% of call volume`}
           icon={<PhoneCall size={20} />}
           tone="blue"
         />
         <MetricCard
-          title="Calls Completed - 3rd Round"
+          title="3rd Round Completed Calls"
           value={viewTotals?.calls_round3 ?? "—"}
           subtitle={`${viewTotals?.round3Rate ?? 0}% of call volume`}
           icon={<PhoneCall size={20} />}
@@ -259,7 +375,11 @@ export function DashboardPage() {
           title="ACA YES"
           value={viewTotals?.aca_yes ?? "—"}
           subtitle={`Acceptance rate: ${viewTotals?.acaRate ?? 0}% of responses`}
-          delta={monthFilter === "all" && data?.latestDelta ? { value: data.latestDelta.acaRateDelta } : undefined}
+          delta={
+            monthFilter === "all" && data?.latestDelta
+              ? { value: data.latestDelta.acaRateDelta }
+              : undefined
+          }
           icon={<CheckCircle2 size={20} />}
           tone="green"
         />
@@ -278,31 +398,17 @@ export function DashboardPage() {
           tone="amber"
         />
         <MetricCard
-          title="Staff members"
-          value={viewTotals?.staff_members ?? "—"}
-          subtitle={`${viewTotals?.callsPerStaff ?? 0} calls per staff member`}
-          icon={<UserCheck size={20} />}
-          tone="purple"
-        />
-        <MetricCard
           title="Referrals · JHPP"
           value={viewTotals?.calls_jhpp ?? "—"}
-          subtitle={`${viewTotals?.jhppShare ?? 0}% of ${(viewTotals?.totalReferrals ?? 0).toLocaleString()} referrals`}
+          subtitle={`${viewTotals?.jhppShare ?? 0}% of JHPP / WR destination counts`}
           icon={<Share2 size={20} />}
           tone="amber"
         />
         <MetricCard
           title="Referrals · WR"
           value={viewTotals?.calls_wr ?? "—"}
-          subtitle={`${viewTotals?.wrShare ?? 0}% of referral volume`}
+          subtitle={`${viewTotals?.wrShare ?? 0}% of JHPP / WR destination counts`}
           icon={<Share2 size={20} />}
-          tone="blue"
-        />
-        <MetricCard
-          title="Total call volume"
-          value={viewTotals?.totalCalls ?? "—"}
-          subtitle={`All three rounds combined (${displayedSeries.length} month${displayedSeries.length === 1 ? "" : "s"})`}
-          icon={<Award size={20} />}
           tone="blue"
         />
       </section>
@@ -312,21 +418,66 @@ export function DashboardPage() {
         <div className="xl:col-span-2 rounded-2xl bg-card border border-border p-5 panel-shadow">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h2 className="text-sm font-bold tracking-tight">Calls completed by round · {selectedYear}</h2>
-              <p className="text-xs text-muted-foreground">Stacked volume across round 1, round 2, and round 3 each month</p>
+              <h2 className="text-sm font-bold tracking-tight">
+                Calls completed by round · {selectedYear}
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                Completed rounds shown separately from the independently
+                reported total calls
+              </p>
             </div>
           </div>
           <div className="h-64 sm:h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={displayedSeries.map(s => ({ ...s, name: MONTH_NAMES[s.month - 1] }))}>
-                <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" />
-                <XAxis dataKey="name" stroke="currentColor" className="text-xs text-muted-foreground" />
-                <YAxis stroke="currentColor" className="text-xs text-muted-foreground" />
-                <Tooltip contentStyle={{ background: "#132233", border: "1px solid #1d3347", borderRadius: 12, fontSize: 12 }} />
+              <BarChart
+                data={displayedSeries.map(s => ({
+                  ...s,
+                  name: MONTH_NAMES[s.month - 1],
+                }))}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="currentColor"
+                  className="text-border"
+                />
+                <XAxis
+                  dataKey="name"
+                  stroke="currentColor"
+                  className="text-xs text-muted-foreground"
+                />
+                <YAxis
+                  stroke="currentColor"
+                  className="text-xs text-muted-foreground"
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "#132233",
+                    border: "1px solid #1d3347",
+                    borderRadius: 12,
+                    fontSize: 12,
+                  }}
+                />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="round1" name="Round 1" stackId="r" fill="#5A92C9" radius={[0, 0, 0, 0]} />
-                <Bar dataKey="round2" name="Round 2" stackId="r" fill="#D58240" />
-                <Bar dataKey="round3" name="Round 3" stackId="r" fill="#8aa0b4" radius={[6, 6, 0, 0]} />
+                <Bar
+                  dataKey="round1"
+                  name="Round 1"
+                  stackId="r"
+                  fill="#5A92C9"
+                  radius={[0, 0, 0, 0]}
+                />
+                <Bar
+                  dataKey="round2"
+                  name="Round 2"
+                  stackId="r"
+                  fill="#D58240"
+                />
+                <Bar
+                  dataKey="round3"
+                  name="Round 3"
+                  stackId="r"
+                  fill="#8aa0b4"
+                  radius={[6, 6, 0, 0]}
+                />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -334,22 +485,47 @@ export function DashboardPage() {
 
         <div className="rounded-2xl bg-card border border-border p-5 panel-shadow flex flex-col justify-between">
           <div>
-            <h2 className="text-sm font-bold tracking-tight">ACA response mix</h2>
-            <p className="text-xs text-muted-foreground">YES vs NO distribution for {monthFilter === "all" ? "the full year" : FULL_MONTHS[Number(monthFilter) - 1]}</p>
+            <h2 className="text-sm font-bold tracking-tight">
+              ACA response mix
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              YES vs NO distribution for{" "}
+              {monthFilter === "all"
+                ? "the full year"
+                : FULL_MONTHS[Number(monthFilter) - 1]}
+            </p>
           </div>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>
-                  {donutData.map(d => <Cell key={d.name} fill={d.color} />)}
+                <Pie
+                  data={donutData}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={55}
+                  outerRadius={85}
+                  paddingAngle={2}
+                >
+                  {donutData.map(d => (
+                    <Cell key={d.name} fill={d.color} />
+                  ))}
                 </Pie>
-                <Tooltip contentStyle={{ background: "#132233", border: "1px solid #1d3347", borderRadius: 12, fontSize: 12 }} />
+                <Tooltip
+                  contentStyle={{
+                    background: "#132233",
+                    border: "1px solid #1d3347",
+                    borderRadius: 12,
+                    fontSize: 12,
+                  }}
+                />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
               </PieChart>
             </ResponsiveContainer>
           </div>
           <div className="text-xs text-center text-muted-foreground">
-            {viewTotals?.totalAca ? `${viewTotals.aca_yes.toLocaleString()} YES (${viewTotals.acaRate}%) · ${viewTotals.aca_no.toLocaleString()} NO` : "No data"}
+            {viewTotals?.totalAca
+              ? `${viewTotals.aca_yes.toLocaleString()} YES (${viewTotals.acaRate}%) · ${viewTotals.aca_no.toLocaleString()} NO`
+              : "No data"}
           </div>
         </div>
       </section>
@@ -359,23 +535,93 @@ export function DashboardPage() {
         <div className="xl:col-span-2 rounded-2xl bg-card border border-border p-5 panel-shadow">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h2 className="text-sm font-bold tracking-tight">Monthly trend · call volume & ACA acceptance rate</h2>
-              <p className="text-xs text-muted-foreground">Tracking performance month over month throughout the year</p>
+              <h2 className="text-sm font-bold tracking-tight">
+                Monthly trend · calls, members reached & referrals
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                Independent monthly counts; ACA acceptance is an additional
+                legacy rate
+              </p>
             </div>
-            <span className="text-xs text-muted-foreground flex items-center gap-1"><TrendingUp size={13} /> {displayedSeries.length} points</span>
+            <span className="text-xs text-muted-foreground hidden sm:flex items-center gap-1">
+              <TrendingUp size={13} /> {displayedSeries.length} points
+            </span>
           </div>
           <div className="h-64 sm:h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={displayedSeries.map(s => ({ ...s, name: MONTH_NAMES[s.month - 1] }))}>
-                <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" />
-                <XAxis dataKey="name" stroke="currentColor" className="text-xs text-muted-foreground" />
-                <YAxis yAxisId="left" stroke="currentColor" className="text-xs text-muted-foreground" />
-                <YAxis yAxisId="right" orientation="right" stroke="currentColor" className="text-xs text-muted-foreground" unit="%" />
-                <Tooltip contentStyle={{ background: "#132233", border: "1px solid #1d3347", borderRadius: 12, fontSize: 12 }} />
+              <LineChart
+                data={displayedSeries.map(s => ({
+                  ...s,
+                  name: MONTH_NAMES[s.month - 1],
+                }))}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="currentColor"
+                  className="text-border"
+                />
+                <XAxis
+                  dataKey="name"
+                  stroke="currentColor"
+                  className="text-xs text-muted-foreground"
+                />
+                <YAxis
+                  yAxisId="left"
+                  stroke="currentColor"
+                  className="text-xs text-muted-foreground"
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="currentColor"
+                  className="text-xs text-muted-foreground"
+                  unit="%"
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "#132233",
+                    border: "1px solid #1d3347",
+                    borderRadius: 12,
+                    fontSize: 12,
+                  }}
+                />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line yAxisId="left" type="monotone" dataKey="totalCalls" name="Total calls" stroke="#5A92C9" strokeWidth={2.5} dot={{ r: 3 }} />
-                <Line yAxisId="right" type="monotone" dataKey="acaRate" name="ACA YES %" stroke="#10b981" strokeWidth={2.5} dot={{ r: 3 }} />
-                <Line yAxisId="left" type="monotone" dataKey="headOfHousehold" name="Head of household" stroke="#D58240" strokeWidth={2} dot={{ r: 3 }} />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="totalCalls"
+                  name="Total calls"
+                  stroke="#5A92C9"
+                  strokeWidth={2.5}
+                  dot={{ r: 3 }}
+                />
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="acaRate"
+                  name="ACA YES %"
+                  stroke="#10b981"
+                  strokeWidth={2.5}
+                  dot={{ r: 3 }}
+                />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="membersReached"
+                  name="Members reached"
+                  stroke="#8aa0b4"
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="referrals"
+                  name="Referrals"
+                  stroke="#D58240"
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -383,22 +629,45 @@ export function DashboardPage() {
 
         <div className="rounded-2xl bg-card border border-border p-5 panel-shadow flex flex-col justify-between">
           <div>
-            <h2 className="text-sm font-bold tracking-tight">Referrals destination split</h2>
-            <p className="text-xs text-muted-foreground">Calls referred to JHPP vs WR</p>
+            <h2 className="text-sm font-bold tracking-tight">
+              Referrals destination split
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              Optional JHPP / WR counts, not a breakdown of the independent
+              referral total
+            </p>
           </div>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={referralPieData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>
-                  {referralPieData.map(d => <Cell key={d.name} fill={d.color} />)}
+                <Pie
+                  data={referralPieData}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={55}
+                  outerRadius={85}
+                  paddingAngle={2}
+                >
+                  {referralPieData.map(d => (
+                    <Cell key={d.name} fill={d.color} />
+                  ))}
                 </Pie>
-                <Tooltip contentStyle={{ background: "#132233", border: "1px solid #1d3347", borderRadius: 12, fontSize: 12 }} />
+                <Tooltip
+                  contentStyle={{
+                    background: "#132233",
+                    border: "1px solid #1d3347",
+                    borderRadius: 12,
+                    fontSize: 12,
+                  }}
+                />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
               </PieChart>
             </ResponsiveContainer>
           </div>
           <div className="text-xs text-center text-muted-foreground">
-            {viewTotals?.totalReferrals ? `JHPP ${viewTotals.calls_jhpp.toLocaleString()} (${viewTotals.jhppShare}%) · WR ${viewTotals.calls_wr.toLocaleString()} (${viewTotals.wrShare}%)` : "No data"}
+            {viewTotals && viewTotals.calls_jhpp + viewTotals.calls_wr > 0
+              ? `JHPP ${viewTotals.calls_jhpp.toLocaleString()} (${viewTotals.jhppShare}%) · WR ${viewTotals.calls_wr.toLocaleString()} (${viewTotals.wrShare}%)`
+              : "No destination data"}
           </div>
         </div>
       </section>
@@ -407,24 +676,43 @@ export function DashboardPage() {
       <section className="rounded-2xl bg-card border border-border p-5 panel-shadow space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div>
-            <h2 className="text-sm font-bold tracking-tight">Monthly KPI history · {selectedYear}</h2>
-            <p className="text-xs text-muted-foreground">All nine manual metrics plus computed rates per month, with full year totals</p>
+            <h2 className="text-sm font-bold tracking-tight">
+              Monthly KPI history · {selectedYear}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              Seven primary monthly fields, optional legacy details, and
+              full-year totals. Scroll horizontally for all columns.
+            </p>
           </div>
           <div className="flex items-center gap-2">
-            <a href={`/api/v1/metrics/export?year=${selectedYear}`} className="text-xs font-semibold text-[#5A92C9] hover:underline flex items-center gap-1">
+            <a
+              href={`/api/v1/metrics/export?year=${selectedYear}`}
+              className="text-xs font-semibold text-[#5A92C9] hover:underline flex items-center gap-1"
+            >
               <Download size={13} /> Export this table as CSV
             </a>
           </div>
         </div>
-        <div className="overflow-x-auto">
+        <div
+          className="overflow-x-auto focus-ring"
+          role="region"
+          aria-label="Monthly KPI history table, scroll horizontally"
+          tabIndex={0}
+        >
           <table className="w-full text-xs text-left border-collapse">
+            <caption className="sr-only">
+              Monthly independent totals and completed rounds, with optional
+              legacy metrics
+            </caption>
             <thead>
               <tr className="border-b border-border text-muted-foreground">
                 <th className="py-2 px-2">Month</th>
                 <th className="py-2 px-2 text-right">R1 calls</th>
                 <th className="py-2 px-2 text-right">R2 calls</th>
                 <th className="py-2 px-2 text-right">R3 calls</th>
-                <th className="py-2 px-2 text-right">Total</th>
+                <th className="py-2 px-2 text-right">Total calls</th>
+                <th className="py-2 px-2 text-right">Members reached</th>
+                <th className="py-2 px-2 text-right">Referrals</th>
                 <th className="py-2 px-2 text-right">ACA YES</th>
                 <th className="py-2 px-2 text-right">ACA No</th>
                 <th className="py-2 px-2 text-right">YES %</th>
@@ -437,37 +725,92 @@ export function DashboardPage() {
             </thead>
             <tbody>
               {series.map(s => (
-                <tr key={s.month} className="border-b border-border/60 hover:bg-muted/40">
-                  <td className="py-2 px-2 font-semibold">{FULL_MONTHS[s.month - 1]}</td>
-                  <td className="py-2 px-2 text-right">{s.round1.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right">{s.round2.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right">{s.round3.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right font-semibold">{s.totalCalls.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right text-emerald-500 font-semibold">{s.acaYes.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right text-muted-foreground">{s.acaNo.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right font-semibold">{s.acaRate}%</td>
-                  <td className="py-2 px-2 text-right">{s.headOfHousehold.toLocaleString()}</td>
+                <tr
+                  key={s.month}
+                  className="border-b border-border/60 hover:bg-muted/40"
+                >
+                  <td className="py-2 px-2 font-semibold">
+                    {FULL_MONTHS[s.month - 1]}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {s.round1.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {s.round2.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {s.round3.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right font-semibold">
+                    {s.totalCalls.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right font-semibold">
+                    {s.membersReached.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right font-semibold">
+                    {s.referrals.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right text-emerald-500 font-semibold">
+                    {s.acaYes.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right text-muted-foreground">
+                    {s.acaNo.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right font-semibold">
+                    {s.acaRate}%
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {s.headOfHousehold.toLocaleString()}
+                  </td>
                   <td className="py-2 px-2 text-right">{s.staff}</td>
                   <td className="py-2 px-2 text-right">{s.callsPerStaff}</td>
-                  <td className="py-2 px-2 text-right">{s.jhpp.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right">{s.wr.toLocaleString()}</td>
+                  <td className="py-2 px-2 text-right">
+                    {s.jhpp.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {s.wr.toLocaleString()}
+                  </td>
                 </tr>
               ))}
               {t && (
                 <tr className="border-t-2 border-border font-bold bg-muted/30">
                   <td className="py-2 px-2">FULL YEAR TOTAL</td>
-                  <td className="py-2 px-2 text-right">{t.calls_round1.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right">{t.calls_round2.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right">{t.calls_round3.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right">{t.totalCalls.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right text-emerald-500">{t.aca_yes.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right text-muted-foreground">{t.aca_no.toLocaleString()}</td>
+                  <td className="py-2 px-2 text-right">
+                    {t.calls_round1.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {t.calls_round2.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {t.calls_round3.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {t.totalCalls.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {t.members_reached.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {t.totalReferrals.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right text-emerald-500">
+                    {t.aca_yes.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right text-muted-foreground">
+                    {t.aca_no.toLocaleString()}
+                  </td>
                   <td className="py-2 px-2 text-right">{t.acaRate}%</td>
-                  <td className="py-2 px-2 text-right">{t.head_of_household.toLocaleString()}</td>
+                  <td className="py-2 px-2 text-right">
+                    {t.head_of_household.toLocaleString()}
+                  </td>
                   <td className="py-2 px-2 text-right">{t.staff_members}</td>
                   <td className="py-2 px-2 text-right">{t.callsPerStaff}</td>
-                  <td className="py-2 px-2 text-right">{t.calls_jhpp.toLocaleString()}</td>
-                  <td className="py-2 px-2 text-right">{t.calls_wr.toLocaleString()}</td>
+                  <td className="py-2 px-2 text-right">
+                    {t.calls_jhpp.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    {t.calls_wr.toLocaleString()}
+                  </td>
                 </tr>
               )}
             </tbody>

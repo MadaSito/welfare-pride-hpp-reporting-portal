@@ -2,7 +2,7 @@ import PDFDocument from "pdfkit";
 import path from "node:path";
 import { constants, closeSync, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { db, getBrandConfig, getReportAssignments, type DbUser, type Report } from "./repository";
+import { computeKpis, db, getBrandConfig, getReportAssignments, type DbUser, type MonthlyMetric, type Report } from "./repository";
 import type { Role } from "./security";
 
 export type ReportActor = { id: string; role: Role; tenantId: string | null };
@@ -10,6 +10,7 @@ export type ExecutiveMonth = {
   reporting_month: number; reporting_year: number; calls_round1: number; calls_round2: number;
   calls_round3: number; aca_yes: number; aca_no: number; head_of_household: number;
   staff_members: number; calls_jhpp: number; calls_wr: number;
+  total_calls: number; members_reached: number; referrals: number;
 };
 
 // A null tenant is unscoped, not a shared tenant. Never associate its records with a report.
@@ -39,22 +40,35 @@ import { canonicalRole } from "./security";
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 export function executiveReport(report: Report) {
   // Exact tenant equality is intentional: NULL metrics and other tenants must never be pooled.
-  let sql = `SELECT reporting_month, reporting_year, calls_round1, calls_round2, calls_round3, aca_yes, aca_no, head_of_household, staff_members, calls_jhpp, calls_wr FROM monthly_metrics WHERE tenant_id = ?`;
+  let sql = `SELECT * FROM monthly_metrics WHERE tenant_id = ?`;
   const args: (string | number)[] = [report.tenant_id ?? ""];
   if (report.reporting_year !== null) { sql += " AND reporting_year = ?"; args.push(report.reporting_year); }
   if (report.reporting_month !== null) { sql += " AND reporting_month = ?"; args.push(report.reporting_month); }
   sql += " ORDER BY reporting_year ASC, reporting_month ASC";
-  const monthly = report.tenant_id ? db.prepare(sql).all(...args) as ExecutiveMonth[] : [];
+  const rows = report.tenant_id ? db.prepare(sql).all(...args) as MonthlyMetric[] : [];
+  // Export only report measures, never notes, user IDs, or other row metadata.
+  // The shared helper preserves explicit zero and falls back only for legacy NULL counts.
+  const monthly: ExecutiveMonth[] = rows.map(m => {
+    const k = computeKpis(m);
+    return {
+      reporting_month: m.reporting_month, reporting_year: m.reporting_year,
+      staff_members: m.staff_members, total_calls: k.totalCalls,
+      members_reached: k.membersReached, referrals: k.totalReferrals,
+      calls_round1: m.calls_round1, calls_round2: m.calls_round2, calls_round3: m.calls_round3,
+      aca_yes: m.aca_yes, aca_no: m.aca_no, head_of_household: m.head_of_household,
+      calls_jhpp: m.calls_jhpp, calls_wr: m.calls_wr,
+    };
+  });
   const month = report.reporting_month === null ? null : monthNames[report.reporting_month - 1] || `Month ${report.reporting_month}`;
   const label = report.reporting_year !== null ? (month ? `${month} ${report.reporting_year}` : `${report.reporting_year}`) : (month ? `${month} · all years` : "All periods");
   const sum = (key: keyof ExecutiveMonth) => monthly.length ? monthly.reduce((n, m) => n + m[key], 0) : null;
   const round1 = sum("calls_round1"), round2 = sum("calls_round2"), round3 = sum("calls_round3");
   const acaYes = sum("aca_yes"), acaNo = sum("aca_no"), callsJhpp = sum("calls_jhpp"), callsWr = sum("calls_wr");
   const totals = {
-    totalCalls: round1 === null ? null : round1 + round2! + round3!, round1, round2, round3,
+    totalCalls: sum("total_calls"), membersReached: sum("members_reached"), round1, round2, round3,
     acaYes, acaNo, acaRate: acaYes === null || !((acaYes ?? 0) + (acaNo ?? 0)) ? null : Math.round(acaYes / (acaYes + acaNo!) * 1000) / 10,
     headOfHousehold: sum("head_of_household"), staffMembers: sum("staff_members"), callsJhpp, callsWr,
-    totalReferrals: callsJhpp === null ? null : callsJhpp + callsWr!,
+    totalReferrals: sum("referrals"),
   };
   let layout_config: unknown = {};
   try { if (report.layout_config) layout_config = JSON.parse(report.layout_config); } catch { /* malformed legacy config */ }
@@ -160,10 +174,11 @@ export function renderExecutivePdf(data: ExecutiveReport): Promise<Buffer> {
 
       const fmt = (n: number | null, suffix = "") => n === null ? "—" : `${n.toLocaleString("en-US")}${suffix}`;
       const t = data.totals;
-      const cards: [string, string][] = [["Total calls",fmt(t.totalCalls)],["Round 1",fmt(t.round1)],["Round 2",fmt(t.round2)],["Round 3",fmt(t.round3)],["ACA yes",fmt(t.acaYes)],["ACA no",fmt(t.acaNo)],["ACA yes rate",fmt(t.acaRate,"%")],["Heads of household",fmt(t.headOfHousehold)],["Staff entries*",fmt(t.staffMembers)],["JHPP calls",fmt(t.callsJhpp)],["WR calls",fmt(t.callsWr)],["Total referrals",fmt(t.totalReferrals)]];
+      const cards: [string, string][] = [["Staff making calls*",fmt(t.staffMembers)],["Total calls",fmt(t.totalCalls)],["Members reached",fmt(t.membersReached)],["Referrals",fmt(t.totalReferrals)],["Completed round 1",fmt(t.round1)],["Completed round 2",fmt(t.round2)],["Completed round 3",fmt(t.round3)],["ACA yes",fmt(t.acaYes)],["ACA no",fmt(t.acaNo)],["ACA yes rate",fmt(t.acaRate,"%")],["Heads of household",fmt(t.headOfHousehold)],["JHPP calls",fmt(t.callsJhpp)],["WR calls",fmt(t.callsWr)]];
       const gap = 8, cardWidth = (width - gap * 3) / 4;
+      const cardRows = Math.ceil(cards.length / 4);
       // Keep the complete summary together instead of drawing cards across a page break.
-      ensureSpace(225);
+      ensureSpace(cardRows * 60 + 45);
       doc.font("RobotoBold").fontSize(12).fillColor(ink).text("Performance at a glance", left, doc.y, { width });
       doc.moveDown(0.45);
       const cardTop = doc.y;
@@ -171,40 +186,42 @@ export function renderExecutivePdf(data: ExecutiveReport): Promise<Buffer> {
         const x = left + (i % 4) * (cardWidth + gap), y = cardTop + Math.floor(i / 4) * 60;
         doc.roundedRect(x, y, cardWidth, 52, 4).fill("#F2F7FB");
         if (i === 0) doc.rect(x, y, 3, 52).fill(orange);
-        doc.font("Roboto").fontSize(8).fillColor(muted).text(label, x + 8, y + 8, { width: cardWidth - 16, lineBreak: false });
+        doc.font("Roboto").fontSize(8).fillColor(muted).text(label, x + 8, y + 6, { width: cardWidth - 16 });
         doc.font("RobotoBold").fontSize(16);
         // Scale unusually large figures to their cell instead of clipping or overlapping.
         const valueWidth = doc.widthOfString(value);
         if (valueWidth > cardWidth - 16) doc.fontSize(16 * (cardWidth - 16) / valueWidth);
-        doc.fillColor(ink).text(value, x + 8, y + 23, { width: cardWidth - 16, lineBreak: false });
+        doc.fillColor(ink).text(value, x + 8, y + 28, { width: cardWidth - 16, lineBreak: false });
       });
-      doc.y = cardTop + 3 * 60;
+      doc.y = cardTop + cardRows * 60;
       doc.font("Roboto").fontSize(8).fillColor(muted).text("* Staff entries are summed across months, not unique people. ACA rate is yes / (yes + no).", left, doc.y, { width, lineGap: 1 });
+      doc.text("Total calls, members reached, referrals, and completed rounds are independent measures. Only legacy entries without total calls or referrals use the prior round or JHPP/WR sums.", left, doc.y, { width, lineGap: 1 });
       doc.moveDown(1.2);
 
-      const widths = [62, 50, 50, 50, 49, 49, 52, 50, 50, 49];
-      const scale = width / widths.reduce((a,b) => a+b, 0), columns = widths.map(v => v * scale);
-      const headings = ["Period", "Round 1", "Round 2", "Round 3", "ACA yes", "ACA no", "Household", "Staff", "JHPP", "WR"];
-      // At least the section title, table header, and first row must fit together.
-      ensureSpace(data.monthly.length ? 70 : 45);
-      doc.font("RobotoBold").fontSize(12).fillColor(ink).text("Monthly detail", left, doc.y, { width });
-      doc.moveDown(0.45);
-      let y = doc.y;
-      const tableHeader = () => {
-        doc.rect(left, y, width, 26).fill(blue);
-        let x = left;
-        // Black or white is selected for WCAG AA against the configured color.
-        headings.forEach((h, i) => { doc.font("RobotoBold").fontSize(7).fillColor(headerText).text(h, x + 2, y + 9, { width: columns[i] - 4, align: i ? "right" : "left", lineBreak: false }); x += columns[i]; });
-        y += 26;
-      };
-      if (!data.monthly.length) {
-        doc.font("Roboto").fontSize(10).fillColor(muted).text("No metric data is available for this report period.", left, y, { width });
-      } else {
+      const monthlyTable = (title: string, headings: string[], widths: number[], valuesFor: (m: ExecutiveMonth) => (string | number)[]) => {
+        const scale = width / widths.reduce((a,b) => a+b, 0), columns = widths.map(v => v * scale);
+        const headerHeight = 38;
+        // Keep the section title, wrapped table header, and first row together.
+        ensureSpace(data.monthly.length ? 85 : 45);
+        doc.font("RobotoBold").fontSize(12).fillColor(ink).text(title, left, doc.y, { width });
+        doc.moveDown(0.45);
+        let y = doc.y;
+        const tableHeader = () => {
+          doc.rect(left, y, width, headerHeight).fill(blue);
+          let x = left;
+          // Black or white is selected for WCAG AA against the configured color.
+          headings.forEach((h, i) => { doc.font("RobotoBold").fontSize(7).fillColor(headerText).text(h, x + 3, y + 7, { width: columns[i] - 6, align: i ? "right" : "left" }); x += columns[i]; });
+          y += headerHeight;
+        };
+        if (!data.monthly.length) {
+          doc.font("Roboto").fontSize(10).fillColor(muted).text("No metric data is available for this report period.", left, y, { width });
+          return;
+        }
         tableHeader();
         data.monthly.forEach((m, row) => {
           if (y + 21 > bottom()) { doc.addPage(); y = doc.y; tableHeader(); }
           if (row % 2 === 0) doc.rect(left, y, width, 21).fill("#F4F8FB");
-          const values = [`${String(m.reporting_month).padStart(2, "0")}/${m.reporting_year}`, m.calls_round1, m.calls_round2, m.calls_round3, m.aca_yes, m.aca_no, m.head_of_household, m.staff_members, m.calls_jhpp, m.calls_wr];
+          const values = valuesFor(m);
           let x = left;
           values.forEach((v, i) => {
             const value = typeof v === "number" ? v.toLocaleString("en-US") : v;
@@ -216,6 +233,13 @@ export function renderExecutivePdf(data: ExecutiveReport): Promise<Buffer> {
           });
           y += 21;
         });
+        doc.y = y;
+      };
+      const periodValue = (m: ExecutiveMonth) => `${String(m.reporting_month).padStart(2, "0")}/${m.reporting_year}`;
+      monthlyTable("Monthly detail", ["Period", "Staff making\ncalls*", "Total calls", "Members\nreached", "Referrals", "Completed\nround 1", "Completed\nround 2", "Completed\nround 3"], [62, 65, 59, 65, 55, 67, 67, 67], m => [periodValue(m), m.staff_members, m.total_calls, m.members_reached, m.referrals, m.calls_round1, m.calls_round2, m.calls_round3]);
+      if (data.monthly.length) {
+        doc.moveDown(1.2);
+        monthlyTable("Monthly supplemental detail", ["Period", "ACA yes", "ACA no", "Heads of\nhousehold", "JHPP calls", "WR calls"], [72, 70, 70, 100, 100, 100], m => [periodValue(m), m.aca_yes, m.aca_no, m.head_of_household, m.calls_jhpp, m.calls_wr]);
       }
 
       // Apply repeating furniture after all flowing text, so page breaks cannot

@@ -1,0 +1,17 @@
+# Session record — monthly field availability — 2026-11-23
+
+The user initially proposed prepopulating a roster and historical monthly metrics. The assistant asked about permissions, tenant ownership, historical time-zone interpretation, missing counts, initial password/MFA access, and public-repository/private-data handling. Personal addresses and organizational figures from that superseded proposal are omitted from this public record; they were not imported, seeded or published.
+
+The user clarified that the proposed accounts would be view-only, corrected one address, selected New York Eastern time for the proposed historical date, and requested zero for blank counts with Welfare Pride tenant ownership. Crucially, the user then superseded prepopulation: **“Dont import the data and accounts just make sure these fields are available to report for each month.”** The requested fields are staff making calls, total calls, members reached, referrals, and first/second/third-round completed calls. Because no accounts are to be created, account roles, corrected personal address, historical date/time-zone settings and password-reset activation were not applied.
+
+The assistant acknowledged the no-import boundary and implemented independent total-call, reached-member and referral fields rather than incorrectly equating total calls with the sum of completion rounds or total referrals with destination subtotals. Existing supplemental metrics and historical data are retained. New form inputs default to zero, and present blank CSV count cells map to zero; an explicit zero is not replaced by a fallback sum.
+
+Work is split across repository/API/schema/CSV validation, monthly entry/dashboard, and executive report/PDF consumers. Only generic test data in private temporary databases/Chromium profiles is used. No branding guide images were re-inspected, no external email/report was sent, and no existing attached host was modified. Source changes, context and this non-sensitive session record are prepared for regular GitHub version control.
+
+The existing application production-security limitations remain. Field availability and successful unit/browser/build tests do not establish production approval, zero-knowledge storage or ADA compliance. Integration results and publication are recorded below after validation.
+
+## Completed integration
+
+The assistant reported that the seven fields now feed entry forms, monthly dashboard views, CSV exchange, report previews and PDFs consistently, without importing supplied data. The full integrated suite passed 201 tests across 17 files. Backend tests verify safe counts, explicit zeros, compatibility, tenant/role/CSRF controls, audit states, CSV labels/round trips and non-destructive migrations. Seven local Chromium UI tests and six independent report/PDF tests passed alongside existing suites. Each uses generic test fixtures, not the canceled roster or organizational monthly figures.
+
+Source and documentation are being versioned on the existing GitHub main branch after the final TypeScript/build check. The intended final response should confirm availability of the seven exact requested fields, independent total-call/referral storage, zero defaults, no imported accounts/monthly records, and no modification to the attached existing server. It must not imply that view-only users or a historical account date were applied when account creation was canceled, or that the application has become production-approved.

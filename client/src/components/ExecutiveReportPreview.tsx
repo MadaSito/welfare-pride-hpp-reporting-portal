@@ -14,6 +14,9 @@ interface ReportInfo {
 interface MonthlyRow {
   reporting_month: number;
   reporting_year: number;
+  total_calls: number;
+  members_reached: number;
+  referrals: number;
   calls_round1: number;
   calls_round2: number;
   calls_round3: number;
@@ -30,6 +33,7 @@ interface ExecutiveData {
   period: { label: string };
   totals: {
     totalCalls: number | null;
+    membersReached: number | null;
     round1: number | null;
     round2: number | null;
     round3: number | null;
@@ -86,9 +90,9 @@ const errorText = async (response: Response, fallback: string) => {
 };
 
 function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
-  return <div className="rounded-xl border border-[#dce7ef] bg-[#f7fafc] p-4">
+  return <div className="min-w-0 rounded-xl border border-[#dce7ef] bg-[#f7fafc] p-4">
     <p className="text-xs font-medium text-[#526b7d]">{label}</p>
-    <p className="mt-2 text-2xl font-bold tracking-tight text-[#102f49] sm:text-3xl">{value}</p>
+    <p className="mt-2 break-all text-2xl font-bold tracking-tight text-[#102f49] sm:text-3xl">{value}</p>
     {detail && <p className="mt-1 text-xs leading-5 text-[#526b7d]">{detail}</p>}
   </div>;
 }
@@ -105,6 +109,7 @@ export function ExecutivePage({ data, logo, company, primary, secondary }: { dat
   const { report, period, totals: t } = data;
   const rows = [...data.monthly].sort((a, b) => a.reporting_year - b.reporting_year || a.reporting_month - b.reporting_month);
   const responses = t.acaYes !== null && t.acaNo !== null ? t.acaYes + t.acaNo : null;
+  const completedRounds = t.round1 !== null && t.round2 !== null && t.round3 !== null ? t.round1 + t.round2 + t.round3 : null;
   return <article className="mx-auto w-full max-w-5xl overflow-hidden bg-white text-[#102f49] shadow-sm" style={{ fontFamily: 'WelfareRoboto, Roboto, Arial, sans-serif' }}>
     <div className="h-1.5" style={{ backgroundColor: primary }} />
     <div className="px-5 py-7 sm:px-9 sm:py-9 lg:px-12">
@@ -127,17 +132,23 @@ export function ExecutivePage({ data, logo, company, primary, secondary }: { dat
       <section aria-labelledby="executive-overview">
         <div className="mb-4 flex items-center gap-3"><span className="h-5 w-1 rounded-full" style={{ backgroundColor: secondary }} /><h4 id="executive-overview" className="text-sm font-bold uppercase tracking-[.12em]">At a glance</h4></div>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Metric label="Total calls" value={number(t.totalCalls)} detail="Across all three rounds" />
+          <Metric label="Staff making calls" value={number(t.staffMembers)} detail="Sum of monthly staff counts, not unique people" />
+          <Metric label="Total calls" value={number(t.totalCalls)} detail="Reported independently of completed rounds" />
+          <Metric label="Members reached" value={number(t.membersReached)} detail="Reported for the period" />
+          <Metric label="Referrals" value={number(t.totalReferrals)} detail="Reported independently of JHPP and WR calls" />
+          <Metric label="Completed round 1" value={number(t.round1)} />
+          <Metric label="Completed round 2" value={number(t.round2)} />
+          <Metric label="Completed round 3" value={number(t.round3)} />
           <Metric label="ACA YES rate" value={responses && t.acaRate !== null ? `${number(t.acaRate)}%` : "—"} detail={responses ? `${number(t.acaYes)} of ${number(responses)} responses` : responses === null ? "No metric data" : "No ACA responses"} />
           <Metric label="Head of household" value={number(t.headOfHousehold)} detail="Reported for the period" />
-          <Metric label="Total referrals" value={number(t.totalReferrals)} detail="JHPP and WR combined" />
         </div>
+        <p className="mt-3 text-xs leading-5 text-[#526b7d]">Total calls, members reached, referrals, and completed rounds are independent measures. Only legacy entries without total calls or referrals use the prior round or JHPP/WR sums.</p>
       </section>
 
       <div className="mt-8 grid gap-5 md:grid-cols-2">
         <section className="rounded-xl border border-[#dce7ef] p-5" aria-labelledby="calls-heading">
-          <div className="mb-5 flex items-start justify-between gap-3"><div><h4 id="calls-heading" className="text-base font-bold">Calls by round</h4><p className="mt-1 text-xs text-[#5c7283]">Distribution of calls in the period</p></div><span className="rounded-full bg-[#edf5fb] px-2.5 py-1 text-xs font-bold text-[#315f83]">{number(t.totalCalls)} total</span></div>
-          <div className="space-y-4"><Breakdown label="Round 1" value={t.round1} total={t.totalCalls} color={primary} /><Breakdown label="Round 2" value={t.round2} total={t.totalCalls} color={primary} /><Breakdown label="Round 3" value={t.round3} total={t.totalCalls} color={secondary} /></div>
+          <div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><h4 id="calls-heading" className="text-base font-bold">Completed rounds</h4><p className="mt-1 text-xs text-[#5c7283]">Share of completed-round entries, not total calls</p></div><span className="rounded-full bg-[#edf5fb] px-2.5 py-1 text-xs font-bold text-[#315f83]">{number(completedRounds)} round entries</span></div>
+          <div className="space-y-4"><Breakdown label="Completed round 1" value={t.round1} total={completedRounds} color={primary} /><Breakdown label="Completed round 2" value={t.round2} total={completedRounds} color={primary} /><Breakdown label="Completed round 3" value={t.round3} total={completedRounds} color={secondary} /></div>
         </section>
         <section className="rounded-xl border border-[#dce7ef] p-5" aria-labelledby="outcomes-heading">
           <h4 id="outcomes-heading" className="text-base font-bold">Responses & referrals</h4><p className="mt-1 text-xs text-[#5c7283]">Reported totals for the period</p>
@@ -150,9 +161,9 @@ export function ExecutivePage({ data, logo, company, primary, secondary }: { dat
       <section className="mt-8" aria-labelledby="monthly-heading">
         <div className="flex flex-wrap items-end justify-between gap-2"><div><h4 id="monthly-heading" className="text-base font-bold">Monthly detail</h4><p className="mt-1 text-xs leading-5 text-[#5c7283]">Metric entries within {period.label}. Scroll horizontally to see all measures.</p></div><p className="text-xs font-medium text-[#5c7283]">{number(rows.length)} {rows.length === 1 ? 'entry' : 'entries'}</p></div>
         {rows.length === 0 ? <p className="mt-4 rounded-xl border border-[#dce7ef] bg-[#f7fafc] p-4 text-sm text-[#526b7d]">No monthly metric entries are available for this period.</p> : <div className="mt-4 overflow-x-auto rounded-xl border border-[#dce7ef]" tabIndex={0} role="region" aria-label="Monthly report details, scroll horizontally">
-          <table className="w-full min-w-[850px] border-collapse text-left text-xs">
-            <thead style={{ backgroundColor: primary, color: contrastText(primary) }}><tr>{["Period", "Round 1", "Round 2", "Round 3", "ACA YES", "ACA NO", "Head of household", "Staff", "JHPP", "WR"].map((label, i) => <th key={label} scope="col" className={`whitespace-nowrap px-3 py-3 font-bold ${i ? 'text-right' : ''}`}>{label}</th>)}</tr></thead>
-            <tbody className="divide-y divide-[#e8eef3]">{rows.map((m, i) => <tr key={`${m.reporting_year}-${m.reporting_month}-${i}`}><th scope="row" className="whitespace-nowrap px-3 py-3 font-semibold">{months[m.reporting_month - 1] || `Month ${m.reporting_month}`} {m.reporting_year}</th>{[m.calls_round1, m.calls_round2, m.calls_round3, m.aca_yes, m.aca_no, m.head_of_household, m.staff_members, m.calls_jhpp, m.calls_wr].map((v, index) => <td key={index} className="px-3 py-3 text-right tabular-nums">{number(v)}</td>)}</tr>)}</tbody>
+          <table className="w-full min-w-[1200px] border-collapse text-left text-xs">
+            <thead style={{ backgroundColor: primary, color: contrastText(primary) }}><tr>{["Period", "Staff making calls", "Total calls", "Members reached", "Referrals", "Completed round 1", "Completed round 2", "Completed round 3", "ACA YES", "ACA NO", "Head of household", "JHPP calls", "WR calls"].map((label, i) => <th key={label} scope="col" className={`px-3 py-3 font-bold ${i ? 'text-right' : 'whitespace-nowrap'}`}>{label}</th>)}</tr></thead>
+            <tbody className="divide-y divide-[#e8eef3]">{rows.map((m, i) => <tr key={`${m.reporting_year}-${m.reporting_month}-${i}`}><th scope="row" className="whitespace-nowrap px-3 py-3 font-semibold">{months[m.reporting_month - 1] || `Month ${m.reporting_month}`} {m.reporting_year}</th>{[m.staff_members, m.total_calls, m.members_reached, m.referrals, m.calls_round1, m.calls_round2, m.calls_round3, m.aca_yes, m.aca_no, m.head_of_household, m.calls_jhpp, m.calls_wr].map((v, index) => <td key={index} className="whitespace-nowrap px-3 py-3 text-right tabular-nums">{number(v)}</td>)}</tr>)}</tbody>
           </table>
         </div>}
         <p className="mt-3 text-xs leading-5 text-[#526b7d]">Staff counts across entries: <strong>{number(t.staffMembers)}</strong>. This is the sum of reported monthly counts, not a count of unique staff members.</p>

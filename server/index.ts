@@ -731,20 +731,24 @@ app.post("/api/v1/admin/invitations/:token/accept", limiters.authStrict, async (
 });
 
 // ---------------------------------------------------------------------
-// Monthly metrics (Module 3 — the EXACT 9 manual fields + computed KPIs)
+// Monthly metrics: seven primary reporting fields and optional legacy extras.
 // ---------------------------------------------------------------------
+const monthlyCount = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const metricsSchema = z.object({
   reporting_month: z.number().int().min(1).max(12),
   reporting_year: z.number().int().min(2000).max(2200),
-  calls_round1: z.number().int().min(0),
-  calls_round2: z.number().int().min(0),
-  calls_round3: z.number().int().min(0),
-  aca_yes: z.number().int().min(0),
-  aca_no: z.number().int().min(0),
-  head_of_household: z.number().int().min(0),
-  staff_members: z.number().int().min(0),
-  calls_jhpp: z.number().int().min(0),
-  calls_wr: z.number().int().min(0),
+  total_calls: monthlyCount.optional(),
+  members_reached: monthlyCount.optional(),
+  referrals: monthlyCount.optional(),
+  calls_round1: monthlyCount.default(0),
+  calls_round2: monthlyCount.default(0),
+  calls_round3: monthlyCount.default(0),
+  aca_yes: monthlyCount.default(0),
+  aca_no: monthlyCount.default(0),
+  head_of_household: monthlyCount.default(0),
+  staff_members: monthlyCount.default(0),
+  calls_jhpp: monthlyCount.default(0),
+  calls_wr: monthlyCount.default(0),
   notes: z.string().max(2000).optional().nullable(),
 });
 
@@ -797,11 +801,20 @@ app.post("/api/v1/metrics/import", requireSession, requireRole("super_admin", "a
   const result: { imported: number; errors: { row: number; error: string }[] } = { imported: 0, errors: [] };
   for (let i = 0; i < parsed.data.length; i++) {
     const row = parsed.data[i];
-    const fields: Record<string, string> = { reporting_year: "Reporting Year", reporting_month: "Reporting Month", calls_round1: "Calls round 1", calls_round2: "Calls round 2", calls_round3: "Calls round 3", aca_yes: "ACA YES", aca_no: "ACA No", head_of_household: "Head of Household", staff_members: "Staff members making calls", calls_jhpp: "Calls referred to JHPP", calls_wr: "Calls referred to WR" };
+    const fields: Record<string, string[]> = {
+      reporting_year: ["Reporting Year"], reporting_month: ["Reporting Month"],
+      staff_members: ["Number of staff making the calls", "Staff members making calls"],
+      total_calls: ["Total Number of Calls"], members_reached: ["Total number of members REACHED"], referrals: ["Number of Referrals"],
+      calls_round1: ["1st Round Completed Calls", "Calls round 1"], calls_round2: ["2nd Round Completed Calls", "Calls round 2"], calls_round3: ["3rd Round Completed Calls", "Calls round 3"],
+      aca_yes: ["ACA YES"], aca_no: ["ACA No"], head_of_household: ["Head of Household"], calls_jhpp: ["Calls referred to JHPP"], calls_wr: ["Calls referred to WR"],
+    };
     const value: Record<string, unknown> = {};
-    for (const [key, header] of Object.entries(fields)) {
-      const raw = row[header] ?? row[key];
-      value[key] = typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : undefined;
+    for (const [key, headers] of Object.entries(fields)) {
+      const header = headers.find(h => Object.prototype.hasOwnProperty.call(row, h));
+      const raw = header === undefined ? row[key] : row[header];
+      if (raw === undefined) value[key] = undefined;
+      else if (typeof raw === "string" && raw.trim() === "" && key !== "reporting_year" && key !== "reporting_month") value[key] = 0;
+      else value[key] = typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
     }
     value.notes = row.Notes ?? row.notes ?? null;
     const metric = metricsSchema.safeParse(value);
@@ -817,7 +830,10 @@ app.post("/api/v1/metrics/import", requireSession, requireRole("super_admin", "a
 app.get("/api/v1/metrics/export", requireSession, requireRole("super_admin", "admin", "manager"), async (req: AuthenticatedRequest, res) => {
   const year = req.query.year ? Number(req.query.year) : undefined;
   const rows = listMonthlyMetrics(year, req.session!.tenantId);
-  const csv = Papa.unparse({ fields: ["Reporting Year", "Reporting Month", "Calls round 1", "Calls round 2", "Calls round 3", "ACA YES", "ACA No", "Head of Household", "Staff members making calls", "Calls referred to JHPP", "Calls referred to WR", "Notes"], data: rows.map(m => [m.reporting_year,m.reporting_month,m.calls_round1,m.calls_round2,m.calls_round3,m.aca_yes,m.aca_no,m.head_of_household,m.staff_members,m.calls_jhpp,m.calls_wr,m.notes ?? ""]) }, { escapeFormulae: true });
+  const csv = Papa.unparse({
+    fields: ["Reporting Year", "Reporting Month", "Number of staff making the calls", "Total Number of Calls", "Total number of members REACHED", "Number of Referrals", "1st Round Completed Calls", "2nd Round Completed Calls", "3rd Round Completed Calls", "ACA YES", "ACA No", "Head of Household", "Calls referred to JHPP", "Calls referred to WR", "Notes"],
+    data: rows.map(m => { const k = computeKpis(m); return [m.reporting_year, m.reporting_month, m.staff_members, k.totalCalls, k.membersReached, k.totalReferrals, m.calls_round1, m.calls_round2, m.calls_round3, m.aca_yes, m.aca_no, m.head_of_household, m.calls_jhpp, m.calls_wr, m.notes ?? ""]; }),
+  }, { escapeFormulae: true });
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="wp-hpp-metrics-${year || "all"}.csv"`);
   await audit(req, "metrics.csv.exported", 200, "metrics", null, { year });
@@ -834,6 +850,10 @@ app.get("/api/v1/dashboard/summary", requireSession, requireRole("super_admin", 
 
   const totals = sorted.reduce(
     (acc, m) => {
+      const k = computeKpis(m);
+      acc.total_calls += k.totalCalls;
+      acc.members_reached += k.membersReached;
+      acc.referrals += k.totalReferrals;
       acc.calls_round1 += m.calls_round1;
       acc.calls_round2 += m.calls_round2;
       acc.calls_round3 += m.calls_round3;
@@ -845,12 +865,13 @@ app.get("/api/v1/dashboard/summary", requireSession, requireRole("super_admin", 
       acc.staff_members = Math.max(acc.staff_members, m.staff_members);
       return acc;
     },
-    { calls_round1: 0, calls_round2: 0, calls_round3: 0, aca_yes: 0, aca_no: 0, head_of_household: 0, calls_jhpp: 0, calls_wr: 0, staff_members: 0 },
+    { total_calls: 0, members_reached: 0, referrals: 0, calls_round1: 0, calls_round2: 0, calls_round3: 0, aca_yes: 0, aca_no: 0, head_of_household: 0, calls_jhpp: 0, calls_wr: 0, staff_members: 0 },
   );
 
-  const totalCalls = totals.calls_round1 + totals.calls_round2 + totals.calls_round3;
+  const totalCalls = totals.total_calls;
   const totalAca = totals.aca_yes + totals.aca_no;
-  const totalReferrals = totals.calls_jhpp + totals.calls_wr;
+  const destinationReferrals = totals.calls_jhpp + totals.calls_wr;
+  const totalReferrals = totals.referrals;
 
   const monthlySeries = sorted.map(m => {
     const k = computeKpis(m);
@@ -861,6 +882,7 @@ app.get("/api/v1/dashboard/summary", requireSession, requireRole("super_admin", 
       round2: m.calls_round2,
       round3: m.calls_round3,
       totalCalls: k.totalCalls,
+      membersReached: k.membersReached,
       acaYes: m.aca_yes,
       acaNo: m.aca_no,
       acaRate: k.acaRate,
@@ -900,8 +922,8 @@ app.get("/api/v1/dashboard/summary", requireSession, requireRole("super_admin", 
       acaRate: totalAca ? Math.round((totals.aca_yes / totalAca) * 1000) / 10 : 0,
       callsPerStaff: totals.staff_members ? Math.round((totalCalls / totals.staff_members) * 10) / 10 : 0,
       totalReferrals,
-      jhppShare: totalReferrals ? Math.round((totals.calls_jhpp / totalReferrals) * 1000) / 10 : 0,
-      wrShare: totalReferrals ? Math.round((totals.calls_wr / totalReferrals) * 1000) / 10 : 0,
+      jhppShare: destinationReferrals ? Math.round((totals.calls_jhpp / destinationReferrals) * 1000) / 10 : 0,
+      wrShare: destinationReferrals ? Math.round((totals.calls_wr / destinationReferrals) * 1000) / 10 : 0,
     },
     monthlySeries,
     latestDelta,

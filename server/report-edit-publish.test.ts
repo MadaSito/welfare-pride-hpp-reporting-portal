@@ -147,7 +147,7 @@ describe("report editing and publish recipients", () => {
       expect(typeof list.data.reports.find((r: { id: string }) => r.id === "report").layout_config).toBe("string");
       await clickButton(page, "Edit");
       const widgets = await page.evaluate(() => Array.from(document.querySelectorAll('input[type="checkbox"]')).map(i => [(i.parentElement?.textContent || "").trim(), (i as HTMLInputElement).checked]));
-      expect(widgets.filter(([, checked]) => checked).map(([label]) => label)).toEqual(["Referrals split", "Monthly trend lines"]);
+      expect(widgets.filter(([, checked]) => checked).map(([label]) => label)).toEqual(["Referrals & destination calls", "Monthly trend lines"]);
       await page.select("select", "0");
       await page.$eval("textarea", el => { const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!; setter.call(el, ""); el.dispatchEvent(new Event("input", { bubbles: true })); });
       await clickButton(page, "Save changes");

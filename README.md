@@ -37,6 +37,12 @@ An administrator must configure and enable SMTP or Microsoft Graph in **Email En
 
 Report access is scoped to an explicit tenant. Legacy users, reports or metrics with no tenant are not automatically reassigned and remain inaccessible to these report features pending a reviewed migration. The standard first-admin bootstrap creates a default tenant on a new database.
 
+## Monthly reporting fields
+
+Each tenant's month/year record supports **Number of staff making the calls**, **Total Number of Calls**, **Total number of members REACHED**, **Number of Referrals**, **1st Round Completed Calls**, **2nd Round Completed Calls**, and **3rd Round Completed Calls**. Total calls and referrals are independent entered values, not forced sums of completed rounds or destination counts. New monthly form values default to zero. The additional ACA, household and JHPP/WR destination metrics remain available as supplemental fields.
+
+The fields are available in manual entry, monthly dashboard views, CSV exchange and executive report/PDF output. Counts must be nonnegative safe integers. Existing legacy rows retain their prior derived totals until an independent value is entered; explicit zero is never replaced with a derived count. See [monthly reporting field context](application-context/monthly-reporting-fields.md) for API/storage compatibility and validation. No supplied account roster or historical monthly figures are automatically prepopulated or imported.
+
 ## Hostinger considerations
 
 Hostinger supports Node.js deployments via GitHub and environment variables. Its documented deployment system creates versioned build directories and overwrites managed application files when deploying. The SQLite database and keys must not be placed in the web root or deployment build directory. Confirm that the selected plan has a private, durable, encrypted persistent storage location, reliable backups and the necessary Node.js support before planning any production installation.

@@ -435,10 +435,10 @@ export function ReportsPage() {
               <p className="text-xs font-semibold mb-1">Included widgets</p>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 {[
-                  { id: "kpi_cards", label: "KPI cards" },
-                  { id: "calls_by_round", label: "Calls by round" },
+                  { id: "kpi_cards", label: "Monthly KPI cards" },
+                  { id: "calls_by_round", label: "Completed rounds" },
                   { id: "aca_breakdown", label: "ACA response mix" },
-                  { id: "referrals", label: "Referrals split" },
+                  { id: "referrals", label: "Referrals & destination calls" },
                   { id: "trend", label: "Monthly trend lines" },
                   { id: "table", label: "Monthly history table" },
                 ].map(w => (

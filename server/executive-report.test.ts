@@ -219,7 +219,7 @@ describe("executive report security and reporting", () => {
     const { r, data } = await json("/api/v1/reports/year/executive", "viewer");
     expect(r.status).toBe(200); expect(r.headers.get("cache-control")).toBe("no-store");
     expect(data.period.label).toBe("2025"); expect(data.monthly).toHaveLength(2);
-    expect(data.totals).toEqual({ totalCalls: 66, round1: 11, round2: 22, round3: 33, acaYes: 4, acaNo: 4, acaRate: 50, headOfHousehold: 13, staffMembers: 5, callsJhpp: 12, callsWr: 14, totalReferrals: 26 });
+    expect(data.totals).toEqual({ totalCalls: 66, membersReached: 0, round1: 11, round2: 22, round3: 33, acaYes: 4, acaNo: 4, acaRate: 50, headOfHousehold: 13, staffMembers: 5, callsJhpp: 12, callsWr: 14, totalReferrals: 26 });
     const jan = (await json("/api/v1/reports/jan-report/executive", "viewer")).data;
     expect(jan.period.label).toBe("January 2025"); expect(jan.monthly).toHaveLength(1); expect(jan.totals.totalCalls).toBe(60);
     const all = (await json("/api/v1/reports/all/executive", "viewer")).data;
@@ -289,7 +289,7 @@ describe("executive report security and reporting", () => {
       const body = pages.map(bodyText).join("").replace(/\s/g, "");
       expect(body).toContain(title.replace(/\s/g, ""));
       expect(body).toContain(description.replace(/\s/g, ""));
-      for (const metric of ["Total calls", "Round 1", "Round 2", "Round 3", "ACA yes", "ACA no", "Heads of household", "Staff entries*", "JHPP calls", "WR calls"]) {
+      for (const metric of ["Total calls", "Members reached", "Referrals", "Completed round 1", "Completed round 2", "Completed round 3", "ACA yes", "ACA no", "Heads of household", "Staff making calls*", "JHPP calls", "WR calls"]) {
         expect(body).toContain(metric.replace(/\s/g, ""));
       }
       expect(body).toContain("Monthlydetail");
@@ -305,11 +305,13 @@ describe("executive report security and reporting", () => {
     const response = await request("/api/v1/reports/all/pdf", "viewer");
     expect(response.status).toBe(200);
     const pdf = path.join(dir, "long.pdf"); writeFileSync(pdf, Buffer.from(await response.arrayBuffer()));
-    expect(spawnSync("pdfinfo", [pdf], { encoding: "utf8" }).stdout).toMatch(/Pages:\s+2\b/);
     const text = spawnSync("pdftotext", ["-layout", pdf, "-"], { encoding: "utf8" }).stdout;
-    expect(text).toContain("01/2032"); expect(text).toContain("Page 1 of 2"); expect(text).toContain("Page 2 of 2");
     const pages = pdfPages(pdf); assertPageFurniture(pages);
-    expect(pages.every(page => page.includes("Period") && page.includes("Household"))).toBe(true);
+    expect(pages.length).toBeGreaterThanOrEqual(2);
+    expect(text).toContain("01/2032"); expect(text).toContain(`Page 1 of ${pages.length}`); expect(text).toContain(`Page ${pages.length} of ${pages.length}`);
+    expect(pages.every(page => page.includes("Period"))).toBe(true);
+    expect(text.replace(/\s+/g, " ")).toContain("Members reached");
+    expect(text).toContain("Monthly supplemental detail");
     assertWordsDoNotOverlap(pdf);
     db.prepare("DELETE FROM monthly_metrics WHERE id LIKE 'long-%'").run();
   });
