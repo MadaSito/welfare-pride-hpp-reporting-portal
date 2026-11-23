@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { canManageTarget, canonicalRole, verifyPassword, COMPROMISED_LEGACY_PASSWORDS, type Role } from "./security";
+import { canManageTarget, canonicalRole, verifyPassword, enforceLocalMfa, COMPROMISED_LEGACY_PASSWORDS, type Role } from "./security";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.resolve(__dirname, "..", "data");
@@ -358,7 +358,7 @@ export function createUser(input: {
     input.role,
     input.passwordHash,
     input.authProvider ?? "local",
-    input.mfaRequired ?? true ? 1 : 0,
+    (enforceLocalMfa() && (input.authProvider ?? "local") === "local") || (input.mfaRequired ?? true) ? 1 : 0,
     input.status ?? "invited",
     input.createdBy ?? null,
     input.mustChangePassword ? 1 : 0,
@@ -375,6 +375,9 @@ export function updateUser(id: string, fields: Partial<{
   ssoId: string | null;
   tenantId: string | null;
 }>): void {
+  if (fields.mfaRequired === false && enforceLocalMfa() && (fields.authProvider ?? findUserById(id)?.auth_provider) === "local") {
+    throw new Error("LOCAL_MFA_REQUIRED");
+  }
   const sets: string[] = [];
   const vals: unknown[] = [];
   const securityChanges: string[] = [];

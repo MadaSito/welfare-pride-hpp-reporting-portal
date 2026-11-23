@@ -6,6 +6,15 @@ import { hash as argonHash, verify as argonVerify, Algorithm } from "@node-rs/ar
 export const ROLES = ["super_admin", "admin", "manager", "view_only"] as const;
 export type Role = (typeof ROLES)[number];
 
+// The fresh-server installer always enables this. Existing deployments must
+// explicitly opt in after planning enrollment; this is not a data migration.
+export function enforceLocalMfa(): boolean {
+  return process.env.REQUIRE_LOCAL_MFA === "true";
+}
+export function localMfaRequired(user: { auth_provider: string; mfa_required: number }): boolean {
+  return !!user.mfa_required || (enforceLocalMfa() && user.auth_provider === "local");
+}
+
 const LEGACY_ROLE_MAP: Record<string, Role> = {
   platform_admin: "super_admin",
   tenant_admin: "admin",
@@ -66,6 +75,7 @@ export const COMPROMISED_LEGACY_PASSWORDS = ["SuperAdmin2026!#W", "AdminPass2026
 export function validatePassword(password: string): boolean {
   if (typeof password !== "string" || COMPROMISED_LEGACY_PASSWORDS.includes(password)) return false;
   if (password.length < 1 || password.length > 256) return false;
+  if (enforceLocalMfa() && password.length < 14) return false;
   return true;
 }
 

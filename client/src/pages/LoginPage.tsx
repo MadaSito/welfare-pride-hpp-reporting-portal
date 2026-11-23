@@ -28,7 +28,7 @@ function generateStrongPassword(): string {
 }
 
 export function LoginPage() {
-  const { stage, csrf, login, startMfaEnroll, verifyMfa, changeInitialPassword, refresh, logout } = useAuth();
+  const { stage, csrf, login, startMfaEnroll, verifyMfa, recoveryCodes, finishMfaRecoveryCodes, changeInitialPassword, refresh, logout } = useAuth();
   const { brand, refresh: refreshBranding } = useBranding();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -66,7 +66,12 @@ export function LoginPage() {
   const [enrollData, setEnrollData] = useState<{ uri: string; manualSecret: string } | null>(null);
   const qrRef = useRef<HTMLCanvasElement | null>(null);
   const [enrollCode, setEnrollCode] = useState("");
-  const [enrollCodesIssued, setEnrollCodesIssued] = useState<string[] | null>(null);
+  const [enrollLoading, setEnrollLoading] = useState(false);
+  const enrollRequested = useRef(false);
+  const enrollAttempt = useRef(0);
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
+  const stageHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const [copied, setCopied] = useState(false);
   const [qrError, setQrError] = useState(false);
 
@@ -121,6 +126,10 @@ export function LoginPage() {
       setSetupNeeded(false);
       await refreshBranding();
       const loginResult = await login(setupEmail.trim(), setupPassword);
+      setSetupPassword("");
+      setSetupConfirm("");
+      setGeneratedInfo(null);
+      setShowSetupPass(false);
       if (loginResult.error) {
         setError("Account created, but automatic sign-in failed. Please sign in below.");
       }
@@ -205,11 +214,53 @@ export function LoginPage() {
     }
   };
 
-  useEffect(() => {
-    if (stage === "mfa_enroll" && !enrollData) {
-      startMfaEnroll().then(setEnrollData).catch(() => setError("Failed to start MFA enrollment"));
+  const loadEnrollment = async () => {
+    if (enrollRequested.current) return;
+    enrollRequested.current = true;
+    const attempt = ++enrollAttempt.current;
+    setEnrollLoading(true);
+    setError(null);
+    setQrError(false);
+    try {
+      const data = await startMfaEnroll();
+      if (attempt === enrollAttempt.current && stageRef.current === "mfa_enroll") setEnrollData(data);
+    } catch {
+      if (attempt === enrollAttempt.current && stageRef.current === "mfa_enroll") {
+        setError("Could not start authenticator setup. Please retry or return to sign-in.");
+      }
+    } finally {
+      if (attempt === enrollAttempt.current) setEnrollLoading(false);
     }
-  }, [stage, enrollData, startMfaEnroll]);
+  };
+
+  useEffect(() => {
+    if (stage === "mfa_enroll") {
+      // The ref also prevents a second request when CSRF changes or Strict Mode replays effects.
+      void loadEnrollment();
+    } else {
+      enrollAttempt.current++;
+      enrollRequested.current = false;
+      setEnrollData(null);
+      setEnrollCode("");
+      setEnrollLoading(false);
+      setQrError(false);
+    }
+  }, [stage, startMfaEnroll]);
+
+  useEffect(() => {
+    setError(null);
+    setCopied(false);
+    setMfaCode("");
+    setRecoveryCode("");
+    setUseRecovery(false);
+    if (stage !== "anonymous") { setPassword(""); setShowPass(false); }
+    if (stage !== "password_change") {
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    }
+    stageHeadingRef.current?.focus();
+  }, [stage]);
 
   useEffect(() => {
     if (enrollData && qrRef.current) {
@@ -219,33 +270,67 @@ export function LoginPage() {
     }
   }, [enrollData]);
 
+  const cancelSignIn = async () => {
+    enrollAttempt.current++;
+    enrollRequested.current = false;
+    setEnrollData(null);
+    setEnrollCode("");
+    setMfaCode("");
+    setRecoveryCode("");
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPassword("");
+    setShowPass(false);
+    setSetupPassword("");
+    setSetupConfirm("");
+    setGeneratedInfo(null);
+    setShowSetupPass(false);
+    setCopied(false);
+    discardPendingMagicLink();
+    setLinkToken(null);
+    setError(null);
+    setBusy(true);
+    try { await logout(); } finally { setBusy(false); }
+  };
+
   const onVerifySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const r = useRecovery ? await verifyMfa("", recoveryCode) : await verifyMfa(mfaCode);
-    setBusy(false);
-    if (!r.ok) setError(useRecovery ? "The recovery code could not be verified. After too many attempts, wait 15 minutes and try again." : "The authenticator code could not be verified. After too many attempts, wait 15 minutes and try again.");
+    try {
+      const r = useRecovery ? await verifyMfa("", recoveryCode) : await verifyMfa(mfaCode);
+      if (!r.ok) setError(useRecovery ? "The recovery code could not be verified. After too many attempts, wait 15 minutes and try again." : "The authenticator code could not be verified. After too many attempts, wait 15 minutes and try again.");
+      else { setMfaCode(""); setRecoveryCode(""); }
+    } catch { setError("Could not reach the server. Please try again."); }
+    finally { setBusy(false); }
   };
 
   const onEnrollSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const r = await verifyMfa(enrollCode);
-    setBusy(false);
-    if (!r.ok) setError("Invalid code. Enter the 6 digits currently shown in your authenticator app.");
-    else if (r.recoveryCodes) setEnrollCodesIssued(r.recoveryCodes);
+    try {
+      const r = await verifyMfa(enrollCode);
+      if (!r.ok) setError("Invalid code. Enter the 6 digits currently shown in your authenticator app.");
+      else { setEnrollCode(""); setEnrollData(null); }
+    } catch { setError("Could not reach the server. Please try again."); }
+    finally { setBusy(false); }
   };
 
   const onPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (newPassword !== confirmPassword) { setError("New passwords do not match."); return; }
+    if (newPassword.length < 14 || newPassword.length > 256) { setError("Use a new password with 14–256 characters."); return; }
     setBusy(true);
     try {
       const result = await changeInitialPassword(currentPassword, newPassword);
-      if (!result.ok) setError(result.error === "INVALID_CREDENTIALS" ? "Current password is incorrect." : result.error === "PASSWORD_MUST_DIFFER" ? "Choose a different password." : "Use 14–128 characters with upper and lowercase letters, at least two digits, and three symbols.");
+      if (result.ok) {
+        setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+      } else {
+        setError(result.error === "INVALID_CREDENTIALS" ? "The current or temporary password is incorrect." : result.error === "PASSWORD_MUST_DIFFER" ? "Choose a password different from your current password." : result.error === "PASSWORD_POLICY_VIOLATION" || result.error === "INVALID_PAYLOAD" ? "Use 14–256 characters and avoid known compromised passwords." : result.error === "SESSION_EXPIRED" || result.error === "AUTHENTICATION_REQUIRED" ? "Your session has expired. Return to sign-in and try again." : "Password change failed. Please try again.");
+      }
     } catch { setError("Password change failed. Please try again."); }
     finally { setBusy(false); }
   };
@@ -262,8 +347,76 @@ export function LoginPage() {
           <p className="text-sm font-medium text-muted-foreground">{tagline}</p>
         </div>
 
-        <div className="bg-card rounded-2xl border border-border shadow-sm p-7 space-y-5">
-          {stage === "mfa_verify" ? (
+        <div className="bg-card rounded-2xl border border-border shadow-sm p-5 sm:p-7 space-y-5">
+          {stage === "mfa_enroll" ? (
+            <form onSubmit={onEnrollSubmit} className="space-y-4" aria-busy={busy || enrollLoading}>
+              <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                <Shield size={14} aria-hidden="true" /> Secure your account
+              </div>
+              <h2 ref={stageHeadingRef} tabIndex={-1} className="text-xl font-bold focus-ring rounded">Set up your authenticator</h2>
+              <p className="text-sm leading-6 text-muted-foreground">Add this account to an authenticator app. You will save recovery codes next, before continuing to the portal.</p>
+              {enrollLoading && <p role="status" className="text-sm text-muted-foreground">Preparing secure setup…</p>}
+              {enrollData && (
+                <>
+                  <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
+                    <p className="text-sm font-semibold">1. Scan the QR code in your app</p>
+                    {!qrError ? (
+                      <div className="flex justify-center">
+                        <canvas ref={qrRef} role="img" aria-label="Authenticator setup QR code. Alternatively enter the setup key below." className="max-w-full h-auto rounded-lg bg-white" />
+                      </div>
+                    ) : <p role="status" className="text-sm text-muted-foreground">The QR code is unavailable. Use the setup key below instead.</p>}
+                    <p className="text-xs leading-5 text-muted-foreground">Cannot scan? Add a time-based account manually using this setup key. Keep it private.</p>
+                    <label htmlFor="mfa-manual-secret" className="block text-xs font-semibold">Manual setup key</label>
+                    <input id="mfa-manual-secret" type="text" readOnly value={enrollData.manualSecret} autoComplete="off" spellCheck={false} className="focus-ring w-full min-w-0 rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm" onFocus={e => e.target.select()} />
+                  </div>
+                  <label htmlFor="mfa-enroll-code" className="block text-sm font-semibold">2. Enter the 6-digit authenticator code</label>
+                  <input id="mfa-enroll-code" type="text" inputMode="numeric" autoComplete="one-time-code" required pattern="[0-9]{6}" maxLength={6} value={enrollCode} onChange={e => setEnrollCode(e.target.value.replace(/\D/g, "").slice(0, 6))} className="focus-ring w-full h-12 px-3 rounded-xl border border-border bg-background text-center font-mono text-2xl tracking-widest" aria-describedby="mfa-enroll-help" />
+                  <p id="mfa-enroll-help" className="text-xs leading-5 text-muted-foreground">Use the current code shown in your authenticator app.</p>
+                </>
+              )}
+              {error && <div role="alert" aria-live="assertive" className="rounded-xl border border-rose-500/30 bg-rose-500/15 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
+              {!enrollData && !enrollLoading && error && <button type="button" onClick={() => { enrollRequested.current = false; void loadEnrollment(); }} className="focus-ring touch-target w-full rounded-xl border border-border px-4 py-3 text-sm font-semibold">Retry authenticator setup</button>}
+              <button type="submit" disabled={busy || enrollLoading || !enrollData || enrollCode.length !== 6} className="focus-ring touch-target w-full rounded-xl bg-[#376b9b] px-4 py-3 text-sm font-bold text-white hover:bg-[#2b567e] disabled:opacity-50">{busy ? "Verifying…" : "Verify and continue"}</button>
+              <button type="button" disabled={busy} onClick={cancelSignIn} className="focus-ring touch-target w-full rounded-lg py-2 text-sm font-semibold text-muted-foreground underline underline-offset-4">Cancel and return to sign-in</button>
+            </form>
+          ) : stage === "recovery_codes" ? (
+            <section className="space-y-4" aria-labelledby="recovery-codes-heading">
+              <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider"><CheckCircle size={14} aria-hidden="true" /> Authenticator connected</div>
+              <h2 id="recovery-codes-heading" ref={stageHeadingRef} tabIndex={-1} className="text-xl font-bold focus-ring rounded">Save your recovery codes</h2>
+              <p className="text-sm leading-6 text-muted-foreground">These codes are shown only once. Store them in your password manager or another secure place before continuing. Each code can be used once if you lose access to your authenticator.</p>
+              <ul aria-label="One-time recovery codes" className="grid grid-cols-1 min-[360px]:grid-cols-2 gap-2 rounded-xl border border-border bg-muted/20 p-3">
+                {(recoveryCodes || []).map(code => <li key={code} className="min-w-0 break-all rounded-lg bg-background px-2 py-2 text-center font-mono text-sm font-semibold select-all">{code}</li>)}
+              </ul>
+              <p className="text-xs leading-5 text-muted-foreground">Do not share these codes. Leaving or reloading this page will discard this one-time copy.</p>
+              <button type="button" onClick={async () => {
+                try {
+                  if (!navigator.clipboard || !recoveryCodes?.length) throw new Error();
+                  await navigator.clipboard.writeText(recoveryCodes.join("\n"));
+                  setCopied(true); setError(null);
+                } catch { setError("Could not copy automatically. Select the codes and save them manually before continuing."); }
+              }} className="focus-ring touch-target w-full rounded-xl border border-border px-4 py-3 text-sm font-semibold inline-flex items-center justify-center gap-2">{copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}{copied ? "Recovery codes copied" : "Copy recovery codes"}</button>
+              {copied && <p role="status" className="text-xs text-muted-foreground">Copied. Save them securely, then clear your clipboard when finished.</p>}
+              {error && <div role="alert" aria-live="assertive" className="rounded-xl border border-rose-500/30 bg-rose-500/15 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
+              <button type="button" disabled={!recoveryCodes?.length} onClick={() => { setCopied(false); setError(null); finishMfaRecoveryCodes(); }} className="focus-ring touch-target w-full rounded-xl bg-[#376b9b] px-4 py-3 text-sm font-bold text-white hover:bg-[#2b567e] disabled:opacity-50">I have saved my recovery codes — continue</button>
+              <button type="button" disabled={busy} onClick={cancelSignIn} className="focus-ring touch-target w-full rounded-lg py-2 text-sm font-semibold text-muted-foreground underline underline-offset-4">Cancel and return to sign-in</button>
+            </section>
+          ) : stage === "password_change" ? (
+            <form onSubmit={onPasswordSubmit} className="space-y-4" aria-busy={busy}>
+              <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider"><KeyRound size={14} aria-hidden="true" /> Final security step</div>
+              <h2 ref={stageHeadingRef} tabIndex={-1} className="text-xl font-bold focus-ring rounded">Choose your new password</h2>
+              <p className="text-sm leading-6 text-muted-foreground">Replace your initial password before accessing the portal. Your new password must be different from your current password.</p>
+              <label htmlFor="initial-current-password" className="block text-sm font-semibold">Current or temporary password</label>
+              <input id="initial-current-password" type="password" required autoComplete="current-password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="focus-ring w-full h-11 px-3 rounded-xl border border-border bg-background text-sm" />
+              <label htmlFor="initial-new-password" className="block text-sm font-semibold">New password</label>
+              <input id="initial-new-password" type="password" required minLength={14} maxLength={256} autoComplete="new-password" aria-describedby="initial-password-help" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="focus-ring w-full h-11 px-3 rounded-xl border border-border bg-background text-sm" />
+              <p id="initial-password-help" className="text-xs leading-5 text-muted-foreground">Use 14–256 characters. A long, unique passphrase works well; no specific mix of uppercase letters, numbers, or symbols is required. Avoid known compromised passwords.</p>
+              <label htmlFor="initial-confirm-password" className="block text-sm font-semibold">Confirm new password</label>
+              <input id="initial-confirm-password" type="password" required minLength={14} maxLength={256} autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="focus-ring w-full h-11 px-3 rounded-xl border border-border bg-background text-sm" />
+              {error && <div role="alert" aria-live="assertive" className="rounded-xl border border-rose-500/30 bg-rose-500/15 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
+              <button type="submit" disabled={busy} className="focus-ring touch-target w-full rounded-xl bg-[#376b9b] px-4 py-3 text-sm font-bold text-white hover:bg-[#2b567e] disabled:opacity-50">{busy ? "Updating password…" : "Update password and enter portal"}</button>
+              <button type="button" disabled={busy} onClick={cancelSignIn} className="focus-ring touch-target w-full rounded-lg py-2 text-sm font-semibold text-muted-foreground underline underline-offset-4">Cancel and return to sign-in</button>
+            </form>
+          ) : stage === "mfa_verify" ? (
             <form onSubmit={onVerifySubmit} className="space-y-4">
               <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                 <Shield size={14} /> Multi-Factor Authentication
@@ -300,7 +453,7 @@ export function LoginPage() {
                   />
                 </label>
               )}
-              {error && <div className="p-3 rounded-xl bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 text-xs flex items-center gap-2"><AlertCircle size={14} />{error}</div>}
+              {error && <div role="alert" aria-live="assertive" className="p-3 rounded-xl bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 text-xs flex items-center gap-2"><AlertCircle size={14} />{error}</div>}
               <button type="submit" disabled={busy} className="touch-target w-full py-2.5 font-bold rounded-xl bg-[#5A92C9] text-white hover:bg-[#4a80b3] disabled:opacity-50 focus-ring text-xs">
                 {busy ? "Verifying…" : "Verify and sign in"}
               </button>
@@ -309,7 +462,7 @@ export function LoginPage() {
                   {useRecovery ? "Use authenticator code instead" : "Trouble signing in? Use recovery code"}
                 </button>
               </div>
-              <button type="button" onClick={async () => { discardPendingMagicLink(); setLinkToken(null); setError(null); await logout(); }} className="focus-ring w-full py-2 text-xs font-semibold text-muted-foreground underline">Cancel and return to sign-in</button>
+              <button type="button" disabled={busy} onClick={cancelSignIn} className="focus-ring touch-target w-full py-2 text-xs font-semibold text-muted-foreground underline">Cancel and return to sign-in</button>
             </form>
           ) : linkToken ? (
             <div className="space-y-5">

@@ -13,9 +13,9 @@ A Node.js/Express and React portal for manually entered HPP outreach metrics and
 
 ## First administrator on a new database
 
-The application no longer creates public demo accounts or a fixed default administrator. On a brand-new installation with an empty database, **open the site in your browser**: the login page detects that no accounts exist and automatically shows a **first-time setup wizard** where you enter your email, choose a strong password, and (optionally) customize the company name, tagline, brand colors and logo. Submitting creates the initial super administrator locally — no email access and no SSH required. The wizard runs exactly once; subsequent visitors only ever see the normal sign-in page. Multi-factor authentication is optional by default and can be required per account anytime in the admin console.
+The application no longer creates public demo accounts or a fixed default administrator. For a fresh private VPS, use the [new-server installer](deploy/INSTALL.md). It creates the first local administrator **before** starting the web service, displays a random temporary password once on your private terminal, and requires authenticator MFA enrollment followed by a password change before full access. No email delivery is needed. Its `REQUIRE_LOCAL_MFA=true` configuration requires MFA for all local users and blocks attempts to disable it through account administration. New passwords in this mode must be at least 14 characters.
 
-Operators with an interactive terminal can alternately run the [bootstrap command](server/BOOTSTRAP.md) against the same persistent data directory used by the server. It creates the super administrator only when no users exist, generates a random temporary password shown once on that terminal.
+The legacy web setup wizard remains available when no accounts exist, and legacy installations may still have optional MFA. Do not expose an empty database to other visitors: the first person able to use that wizard can claim administration. The older [bootstrap command](server/BOOTSTRAP.md) is not the fresh-installer helper. `server/install-admin.ts` is the secure, terminal-only installation helper, not a password-reset command; it refuses databases containing any user.
 
 Existing databases are not reset; accounts with previously published demo passwords are quarantined on startup, and a recovery procedure for those accounts is not yet supplied. This setup has been tested in a temporary local environment, not on the requested Hostinger plan. It does not make the portal production-ready.
 
@@ -49,37 +49,23 @@ Host-level access can bypass portal login. Host administrators, a compromised ap
 
 ## Automated deployment (VPS, bare metal, Docker)
 
-A single universal installer ([`deploy/install.sh`](deploy/install.sh)) supports three methods:
-
-1. **VPS / bare metal** (Ubuntu 22.04+ or Debian 12+) — installs Node 22, pnpm, systemd service, and optionally Caddy for automatic Let's Encrypt HTTPS. It creates the first administrator automatically and prints the username, password, and portal URL upon completion.
-2. **Docker** — `docker compose` with a persistent SQLite volume.
-3. **Hostinger verification** — checks a live deployment's health and asset version.
-
-On a fresh VPS (e.g. a $4–6/mo DigitalOcean Droplet, Hetzner, or Linode), run:
+Use [`deploy/install.sh`](deploy/install.sh) on a **new server with synthetic test data only**. Read [the installation guide](deploy/INSTALL.md) for supported distributions, DNS and HTTPS requirements, method selection, preflight checks, and operator commands. The script will refuse existing installation paths, services or occupied application/proxy ports. It does not upgrade or migrate an existing installation and never rotates existing keys.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MadaSito/welfare-pride-hpp-reporting-portal/main/deploy/install.sh | sudo bash
+git clone https://github.com/MadaSito/welfare-pride-hpp-reporting-portal.git
+cd welfare-pride-hpp-reporting-portal
+less deploy/install.sh
+sudo bash deploy/install.sh --method=vps \
+  --domain=portal.example.org --email=admin@example.org \
+  --acknowledge-testing-only
 ```
 
-Or clone first: `git clone https://github.com/MadaSito/welfare-pride-hpp-reporting-portal.git && cd welfare-pride-hpp-reporting-portal && sudo ./deploy/install.sh`. Non-interactive flags: `--method=vps --domain=beacon.welfarepride.org --email=admin@welfarepride.org`. The installer generates strong random secrets (`APP_SESSION_SECRET`, `APP_ENCRYPTION_KEY`, and a policy-compliant admin password) automatically, so no manual password entry is required.
+Replace the example hostname and email; use a private, unrecorded interactive SSH session. Do not pipe this installer into a shell or record its terminal. For reproducibility, pin the source with `--ref=` followed by a reviewed full commit SHA. A privately hosted VPS is not automatically a production-safe application. If the hostname/server is internal-only and cannot complete public certificate issuance, this public-ACME installer needs a separately reviewed private TLS or DNS-challenge configuration; it does not fall back to HTTP.
 
-**Reset or unlock an administrator** (if credentials are lost):
-
-```bash
-sudo -u portal bash -c 'set -a; source /opt/welfare-pride-portal/.env; set +a; cd /opt/welfare-pride-portal; node --import tsx - << "NODE"
-(async () => {
-  const { updatePassword, db } = await import("./server/repository.js");
-  const { hashPassword } = await import("./server/security.js");
-  const u = db.prepare("SELECT * FROM users ORDER BY created_at LIMIT 1").get();
-  const hash = await hashPassword("SetYourPasswordHere!2026");
-  updatePassword(u.id, hash);
-  console.log("Account unlocked + password reset for:", u.email);
-})();
-NODE'
-```
+The installer generates independent session, MFA-encryption and audit secrets outside the source tree and records the resolved source commit. Never run it again to recover a lost password. No supported forgot/reset recovery CLI is implemented; those HTTP endpoints return 501. The previous ad hoc README reset snippet has been removed because it was not a safe supported procedure. Existing account recovery must be reviewed separately without replacing the database or rotating its encryption key.
 
 ## Repository and checks
 
-The repository is [MadaSito/welfare-pride-hpp-reporting-portal](https://github.com/MadaSito/welfare-pride-hpp-reporting-portal); access requires permission to the private repository.
+The repository is [MadaSito/welfare-pride-hpp-reporting-portal](https://github.com/MadaSito/welfare-pride-hpp-reporting-portal). It is currently public; never commit runtime secrets, database files, private logs, or real customer data.
 
 Use a disposable, separate `DATA_DIR` for development tests; do not point tests at existing data. Commands include `pnpm check`, `pnpm test`, `pnpm run build`, and `pnpm audit --prod --audit-level=high`. The test suite is incomplete and cannot certify access control, SSO, encryption, accessibility, or production readiness.

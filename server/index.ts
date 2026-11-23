@@ -24,6 +24,8 @@ import {
   attachSession,
   clearSession,
   validatePassword,
+  enforceLocalMfa,
+  localMfaRequired,
   hashPassword,
   verifyPassword,
   encryptSecret,
@@ -214,7 +216,8 @@ app.use((req: AuthenticatedRequest, _res, next) => {
         status !== user.status || !["active", "invited"].includes(user.status) ||
         role !== user.role || tenantId !== user.tenant_id || req.session.role !== user.role || req.session.tenantId !== user.tenant_id ||
         req.session.sessionVersion !== user.session_version ||
-        (req.session.stage === "full" && (user.status !== "active" || (user.mfa_required && (!user.mfa_enrolled_at || !user.mfa_secret_encrypted))))) {
+        (req.session.stage === "full" && (user.status !== "active" || !!user.must_change_password ||
+          (enforceLocalMfa() && !user.mfa_required) || (localMfaRequired(user) && (!user.mfa_enrolled_at || !user.mfa_secret_encrypted))))) {
       req.session = undefined;
     }
   }
@@ -395,15 +398,19 @@ app.post("/api/v1/auth/login", limiters.authStrict, async (req: AuthenticatedReq
       current.tenant_id !== user.tenant_id || current.auth_provider !== "local" || current.status !== user.status) {
     return res.status(401).json({ error: "AUTHENTICATION_REQUIRED" });
   }
+  // Enabling mandatory mode invalidates old password-only full sessions, and
+  // each local account is upgraded only after its password has been verified.
+  if (enforceLocalMfa() && !current.mfa_required) updateUser(current.id, { mfaRequired: true });
   markSignInSuccess(user.id);
   const signedIn = findUserById(user.id)!;
 
-  if (!signedIn.mfa_required) {
+  if (!localMfaRequired(signedIn)) {
     const csrf = randomBytes(24).toString("base64url");
-    const fullSession = await issueSession(signedIn, "full", csrf, "30m");
+    const stage = signedIn.must_change_password ? "password_change" : "full";
+    const fullSession = await issueSession(signedIn, stage, csrf, stage === "full" ? "30m" : "10m");
     attachSession(res, fullSession, req);
     await audit(req, "auth.login.succeeded", 200, "user", user.id);
-    return res.json({ stage: "full", user: sanitizeUser(signedIn), csrf });
+    return res.json({ stage, user: stage === "full" ? sanitizeUser(signedIn) : undefined, csrf });
   }
   const stage = signedIn.mfa_enrolled_at && signedIn.mfa_secret_encrypted ? "mfa_verify" : "mfa_enroll";
   const csrf = randomBytes(24).toString("base64url");
@@ -604,6 +611,10 @@ app.post("/api/v1/admin/users", requireSession, requireRole("super_admin", "admi
   const parsed = createUserSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_USER_REQUEST" });
   const actorRole = req.session!.role;
+  if (enforceLocalMfa() && parsed.data.mfaRequired === false) {
+    await audit(req, "user.mfa.disable_denied", 400, "user");
+    return res.status(400).json({ error: "LOCAL_MFA_REQUIRED" });
+  }
   if (!mayAssignRole(actorRole, parsed.data.role)) {
     await audit(req, "user.creation.denied", 403, "user", null, { requestedRole: parsed.data.role });
     return res.status(403).json({ error: "ROLE_SCOPE_VIOLATION" });
@@ -649,6 +660,10 @@ app.patch("/api/v1/admin/users/:id", requireSession, requireRole("super_admin", 
   const parsed = updateUserSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "INVALID_PAYLOAD" });
   if (parsed.data.role && !mayAssignRole(actor, parsed.data.role)) return res.status(403).json({ error: "ROLE_SCOPE_VIOLATION" });
+  if (enforceLocalMfa() && target.auth_provider === "local" && parsed.data.mfaRequired === false) {
+    await audit(req, "user.mfa.disable_denied", 400, "user", target.id);
+    return res.status(400).json({ error: "LOCAL_MFA_REQUIRED" });
+  }
   if (parsed.data.status === "active" && target.status === "disabled" && target.password_hash) {
     for (const exposed of COMPROMISED_LEGACY_PASSWORDS) {
       if (await verifyPassword(target.password_hash, exposed)) return res.status(409).json({ error: "COMPROMISED_CREDENTIAL_RESET_REQUIRED" });
